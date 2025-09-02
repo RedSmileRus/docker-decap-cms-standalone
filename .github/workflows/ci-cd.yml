@@ -155,9 +155,11 @@ jobs:
           envs: YC_IAM_TOKEN
           script: |
             set -euo pipefail
-            # login to YCR on target VM
+            # Login to YCR on target VM
             echo "$YC_IAM_TOKEN" | docker login -u iam --password-stdin cr.yandex
             mkdir -p ~/decap-staging
+            # Clean up existing config.yml (file or directory)
+            rm -rf ~/decap-staging/config.yml
             export IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
             cat > ~/decap-staging/docker-compose.yml <<'EOF'
             services:
@@ -189,7 +191,7 @@ jobs:
                 name: posts
                 folder: posts
                 media_folder: "/static/media/blog"
-                public_folder: "../../../static/media/blog" # relative path from markdown file location
+                public_folder: "../../../static/media/blog"
                 slug: "{{fields.slug}}"
                 path: "{{year}}/{{month}}/{{slug}}"
                 create: true
@@ -198,18 +200,36 @@ jobs:
                     field: draft
                     pattern: true
                 fields:
-                  - {label: "Template Key", name: templateKey, widget: "hidden", default: "blog-post"}
-                  - {label: "Slug", name: slug, widget: "string",
-                     pattern: ["^[a-z0-9]+(?:-[a-z0-9]+)*$",
-                               "A slug can have no spaces or special characters"]
-                    }
-                  - {label: "Cover Image", name: cover, widget: "image"}
-                  - {label: "Title", name: title}
-                  - {label: "Publish Date", name: date, widget: "datetime"}
-                  - {label: "Description", name: description, widget: "text"}
-                  - {label: "Draft", name: draft, widget: "boolean", default: false}
-                  - {label: "Tags", name: tags, widget: "list" }
-                  - {label: "Body", name: body, widget: "markdown"}
+                  - label: "Template Key"
+                    name: templateKey
+                    widget: hidden
+                    default: "blog-post"
+                  - label: "Slug"
+                    name: slug
+                    widget: string
+                    pattern: ["^[a-z0-9]+(?:-[a-z0-9]+)*$", "A slug can have no spaces or special characters"]
+                  - label: "Cover Image"
+                    name: cover
+                    widget: image
+                  - label: "Title"
+                    name: title
+                    widget: string
+                  - label: "Publish Date"
+                    name: date
+                    widget: datetime
+                  - label: "Description"
+                    name: description
+                    widget: text
+                  - label: "Draft"
+                    name: draft
+                    widget: boolean
+                    default: false
+                  - label: "Tags"
+                    name: tags
+                    widget: list
+                  - label: "Body"
+                    name: body
+                    widget: markdown
             EOF
             docker compose -f ~/decap-staging/docker-compose.yml pull
             docker compose -f ~/decap-staging/docker-compose.yml up -d
@@ -259,6 +279,9 @@ jobs:
         run: |
           TOKEN=$(yc iam create-token)
           echo "$TOKEN" | docker login -u iam --password-stdin cr.yandex
+      - name: Pull image for scanning
+        run: |
+          docker pull ${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}
       - name: Trivy image scan (SARIF)
         uses: aquasecurity/trivy-action@0.24.0
         with:
@@ -356,6 +379,8 @@ jobs:
             set -euo pipefail
             echo "$YC_IAM_TOKEN" | docker login -u iam --password-stdin cr.yandex
             mkdir -p ~/decap-prod
+            # Clean up existing config.yml (file or directory)
+            rm -rf ~/decap-prod/config.yml
             export IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
             cat > ~/decap-prod/docker-compose.yml <<'EOF'
             services:
@@ -387,7 +412,7 @@ jobs:
                 name: posts
                 folder: posts
                 media_folder: "/static/media/blog"
-                public_folder: "../../../static/media/blog" # relative path from markdown file location
+                public_folder: "../../../static/media/blog"
                 slug: "{{fields.slug}}"
                 path: "{{year}}/{{month}}/{{slug}}"
                 create: true
@@ -396,18 +421,36 @@ jobs:
                     field: draft
                     pattern: true
                 fields:
-                  - {label: "Template Key", name: templateKey, widget: "hidden", default: "blog-post"}
-                  - {label: "Slug", name: slug, widget: "string",
-                     pattern: ["^[a-z0-9]+(?:-[a-z0-9]+)*$",
-                               "A slug can have no spaces or special characters"]
-                    }
-                  - {label: "Cover Image", name: cover, widget: "image"}
-                  - {label: "Title", name: title}
-                  - {label: "Publish Date", name: date, widget: "datetime"}
-                  - {label: "Description", name: description, widget: "text"}
-                  - {label: "Draft", name: draft, widget: "boolean", default: false}
-                  - {label: "Tags", name: tags, widget: "list" }
-                  - {label: "Body", name: body, widget: "markdown"}
+                  - label: "Template Key"
+                    name: templateKey
+                    widget: hidden
+                    default: "blog-post"
+                  - label: "Slug"
+                    name: slug
+                    widget: string
+                    pattern: ["^[a-z0-9]+(?:-[a-z0-9]+)*$", "A slug can have no spaces or special characters"]
+                  - label: "Cover Image"
+                    name: cover
+                    widget: image
+                  - label: "Title"
+                    name: title
+                    widget: string
+                  - label: "Publish Date"
+                    name: date
+                    widget: datetime
+                  - label: "Description"
+                    name: description
+                    widget: text
+                  - label: "Draft"
+                    name: draft
+                    widget: boolean
+                    default: false
+                  - label: "Tags"
+                    name: tags
+                    widget: list
+                  - label: "Body"
+                    name: body
+                    widget: markdown
             EOF
             docker compose -f ~/decap-prod/docker-compose.yml pull
             docker compose -f ~/decap-prod/docker-compose.yml up -d
