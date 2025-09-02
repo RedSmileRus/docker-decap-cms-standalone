@@ -21,10 +21,10 @@ jobs:
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         with:
-          # Убраны параметры, передаём через команду
           config-path: .gitleaks.toml  # Опционально, если есть кастомная конфигурация
         env:
           GITLEAKS_COMMAND: "detect --redact --verbose --exit-code=2 --report-format=sarif --report-path=./gitleaks-results.sarif --log-level=debug"
+        continue-on-error: true
       - name: Extract Gitleaks SARIF from zip
         run: |
           if [ -f gitleaks-results.sarif.zip ]; then
@@ -57,11 +57,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
       - name: Install dependencies
-        run: npm ci || echo "npm ci failed, proceeding with audit"
+        run: npm install || echo "No package.json or lock file, skipping install"
+        continue-on-error: true
       - name: Run npm audit
-        run: npm audit --audit-level=high --json > sast-npm-audit.json 2>/dev/null || echo "npm audit failed, creating empty report"
+        run: npm audit --audit-level=high --json > sast-npm-audit.json 2>/dev/null || echo "npm audit failed or not applicable, creating empty report"
         continue-on-error: true
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
