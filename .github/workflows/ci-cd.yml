@@ -191,6 +191,7 @@ jobs:
             # container.env
             cat > ~/decap-staging/container.env <<'ENV'
             PORT=80
+            OAUTH_PORT=8080
             HOST=0.0.0.0
             ORIGINS=${{ secrets.ORIGINS }}
             NODE_ENV=production

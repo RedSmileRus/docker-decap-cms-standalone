@@ -3,16 +3,20 @@
 
 const express = require("express");
 const path = require("path");
-const url = require("url");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const cookieParser = require("cookie-parser");
 const csrf = require("csurf");
 const cors = require("cors");
+const { spawn } = require("child_process");
+const proxy = require("express-http-proxy");
 
 // --------- Settings ---------
-const port = Number(process.env.PORT || 80);
+const PORT = Number(process.env.PORT || 80);
+const HOST = process.env.HOST || "0.0.0.0";
 const NODE_ENV = process.env.NODE_ENV || "production";
+const OAUTH_PORT = Number(process.env.OAUTH_PORT || 8080);
+const OAUTH_HOST = "127.0.0.1"; // слушаем только локально
 
 // ORIGINS: "host1.com,foo.bar,baz.qux"
 const ORIGINS = (process.env.ORIGINS || "")
@@ -83,19 +87,6 @@ app.use((req, res, next) => {
   return next();
 });
 
-// Удобный эндпоинт, чтобы фронт мог получить токен (если появятся формы)
-// Не обязателен — закомментируй, если не нужен.
-// app.get("/csrf-token", (req, res) => {
-//   try {
-//     // создаст токен, если csurf активен на запросе
-//     const token = req.csrfToken?.();
-//     if (!token) return res.status(204).end();
-//     res.json({ csrfToken: token });
-//   } catch {
-//     res.status(204).end();
-//   }
-// });
-
 // --------- Static & CMS bundle ---------
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -111,18 +102,36 @@ app.get("/config.yml", (req, res) => {
   res.sendFile("./config.yml", { root: path.join(__dirname, "..") });
 });
 
-// --------- OAuth proxy routes ---------
-const oauth_provider_app = require("../netlify-cms-github-oauth-provider/app.js");
+// --------- OAuth: запускаем отдельный процесс и проксируем ---------
+const oauthPath = path.join(__dirname, "..", "netlify-cms-github-oauth-provider", "app.js");
 
-app.use("/auth", (req, res, next) => {
-  req.url = "/auth";
-  oauth_provider_app(req, res, next);
+// Стартуем standalone-приложение OAuth на локальном порту OAUTH_PORT
+const oauthProc = spawn("node", [oauthPath], {
+  env: {
+    ...process.env,
+    PORT: String(OAUTH_PORT),
+    HOST: OAUTH_HOST,
+  },
+  stdio: ["ignore", "inherit", "inherit"],
 });
 
-app.use("/callback", (req, res, next) => {
-  req.url = "/callback";
-  oauth_provider_app(req, res, next);
+oauthProc.on("exit", (code, signal) => {
+  console.error(`[oauth] process exited (code=${code}, signal=${signal})`);
 });
+
+const oauthTarget = `http://${OAUTH_HOST}:${OAUTH_PORT}`;
+
+// Проксируем /auth и /callback на локальный OAuth-процесс
+app.use(
+  ["/auth", "/callback"],
+  proxy(oauthTarget, {
+    proxyReqPathResolver: (req) => req.originalUrl, // сохраняем путь как есть
+    proxyErrorHandler: (err, res, next) => {
+      console.error("[oauth proxy] error:", err.message);
+      res.status(502).send("OAuth provider is not available");
+    },
+  })
+);
 
 // --------- Health ---------
 app.get("/healthz", (_req, res) => {
@@ -139,15 +148,36 @@ app.use((err, req, res, next) => {
   if (err && err.message === "Not allowed by CORS") {
     return res.status(403).json({ error: "Forbidden" });
   }
-  // Прочее
   console.error("Unhandled error:", err);
   res.status(500).json({ error: "Internal Server Error" });
 });
 
 // --------- Start ---------
-app.listen(port, () => {
-  console.log(`Decap CMS listening on port ${port}`);
-});
+const server = app
+  .listen(PORT, HOST, () => {
+    console.log(`Decap CMS listening on port ${PORT}`);
+    console.log(`OAuth provider expected at ${oauthTarget}`);
+  })
+  .on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`Port ${PORT} is in use. Set PORT env or free the port.`);
+    }
+    process.exit(1);
+  });
+
+// --------- Graceful shutdown ---------
+function shutdown() {
+  try {
+    server && server.close(() => process.exit(0));
+  } catch (_) {}
+  if (oauthProc && !oauthProc.killed) {
+    try {
+      oauthProc.kill("SIGTERM");
+    } catch (_) {}
+  }
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
 
 // Для тестов/импорта
 module.exports = app;
