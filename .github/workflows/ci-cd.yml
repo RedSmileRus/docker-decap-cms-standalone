@@ -40,10 +40,10 @@ jobs:
             echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}' > ./gitleaks-results.sarif
           fi
       - name: Run Semgrep
-        uses: semgrep/semgrep-action@v2  # Обновили до v2, где поддерживается output
+        uses: semgrep/semgrep-action@v1  # Вернулись к v1
         with:
           config: auto
-          output: semgrep.sarif  # Заменили generateSarif на output
+          output: sarif  # Правильный параметр для v1
         continue-on-error: true
       - name: Debug Semgrep output
         run: |
