@@ -401,7 +401,7 @@ jobs:
   # ---------- Deploy: Prod ----------
   deploy-prod:
     runs-on: ubuntu-latest
-    needs: security-gateway
+    needs: [security-gateway, build]
     if: needs.security-gateway.result == 'success'
     steps:
       - name: Install YC CLI (runner)
@@ -437,12 +437,17 @@ jobs:
             sudo ufw allow 80 || true
 
             IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
+            # Базовая проверка, что тег не пустой
+            case "$IMAGE" in
+              *:) echo "Image tag is empty — check needs.build.outputs.image_tag"; exit 1;;
+            esac
 
             cat > ~/decap-prod/container.env <<'ENV'
             PORT=80
             HOST=0.0.0.0
             ORIGINS=${{ secrets.ORIGINS }}
             NODE_ENV=production
+            OAUTH_PORT=8080
             ENV
             sed -i 's/\r$//' ~/decap-prod/container.env
 
