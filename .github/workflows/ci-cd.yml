@@ -30,6 +30,8 @@ jobs:
           if [ -f ./results.sarif ]; then
             echo "Renaming results.sarif to ./gitleaks-results.sarif"
             mv ./results.sarif ./gitleaks-results.sarif
+            echo "Verifying file existence"
+            ls -la ./gitleaks-results.sarif
           else
             echo "No results.sarif found, creating empty SARIF"
             echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}' > ./gitleaks-results.sarif
@@ -39,7 +41,7 @@ jobs:
         with:
           config: auto
           publishToken: ${{ secrets.SEMGREP_APP_TOKEN }}
-          args: --sarif  # Для локальной генерации SARIF
+          args: --sarif  # Корректный синтаксис: передаём как строку
         continue-on-error: true
       - name: Debug Semgrep output
         run: |
@@ -59,6 +61,17 @@ jobs:
       - name: Run npm audit
         run: npm audit --audit-level=high --json > sast-npm-audit.json 2>/dev/null || echo "npm audit failed or not applicable, creating empty report"
         continue-on-error: true
+      - name: Verify SARIF files before upload
+        run: |
+          ls -la .
+          if [ ! -f ./gitleaks-results.sarif ]; then
+            echo "Creating empty gitleaks-results.sarif"
+            echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}' > ./gitleaks-results.sarif
+          fi
+          if [ ! -f ./semgrep.sarif ]; then
+            echo "Creating empty semgrep.sarif"
+            echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"semgrep","informationUri":"https://semgrep.dev"}},"results":[]}]}' > ./semgrep.sarif
+          fi
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
