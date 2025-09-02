@@ -29,12 +29,15 @@ jobs:
           ls -la
           if [ -f gitleaks-results.sarif.zip ]; then
             unzip -o gitleaks-results.sarif.zip -d .
-            if [ -f gitleaks-results.sarif ]; then
-              echo "SARIF file extracted successfully"
-              mv gitleaks-results.sarif ./gitleaks-results.sarif
+            if [ -f ./gitleaks-results.sarif ]; then
+              echo "SARIF file extracted successfully to ./gitleaks-results.sarif"
             else
-              echo "No SARIF file in zip, creating empty SARIF"
-              echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}' > ./gitleaks-results.sarif
+              echo "No SARIF file in zip, searching for alternatives..."
+              find . -name "gitleaks-results.sarif" -exec mv {} ./gitleaks-results.sarif \;
+              if [ ! -f ./gitleaks-results.sarif ]; then
+                echo "No SARIF file found, creating empty SARIF"
+                echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}' > ./gitleaks-results.sarif
+              fi
             fi
           else
             echo "No Gitleaks zip found, creating empty SARIF"
@@ -43,8 +46,9 @@ jobs:
       - name: Run Semgrep
         uses: semgrep/semgrep-action@v1
         with:
-            config: auto
-            publishToken: ${{ secrets.SEMGREP_APP_TOKEN }}
+          config: auto
+          publishToken: ${{ secrets.SEMGREP_APP_TOKEN }}
+          args: --sarif  # Добавляем флаг для локальной генерации SARIF
         continue-on-error: true
       - name: Debug Semgrep output
         run: |
