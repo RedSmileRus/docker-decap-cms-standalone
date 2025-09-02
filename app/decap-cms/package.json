@@ -1,6 +1,6 @@
 {
   "name": "decap-cms",
-  "description": "Decap CMS.",
+  "description": "Decap CMS with hardened Express server",
   "version": "1.0.0",
   "author": "Joey Miller",
   "private": true,
@@ -9,6 +9,11 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "express-http-proxy": "^1.6.3"
+    "express-http-proxy": "^1.6.3",
+    "helmet": "^7.1.0",
+    "express-rate-limit": "^7.4.0",
+    "cookie-parser": "^1.4.6",
+    "csurf": "^1.11.0",
+    "cors": "^2.8.5"
   }
 }

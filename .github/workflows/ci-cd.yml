@@ -19,21 +19,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # --- Gitleaks (SARIF) ---
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
-        env:
-          GITLEAKS_COMMAND: "detect --redact --verbose --exit-code=2 --report-format=sarif --report-path=./results.sarif --log-level=debug"
+        with:
+          args: --redact --verbose --exit-code=2 --report-format sarif --report-path gitleaks-results.sarif
         continue-on-error: true
 
-      - name: Extract Gitleaks SARIF
+      # Некоторые версии экшена пишут results.sarif или gitleaks.sarif — нормализуем
+      - name: Collect Gitleaks SARIF (for Code Scanning)
+        if: always()
         run: |
-          if [ -f ./results.sarif ]; then
-            mv ./results.sarif ./gitleaks-results.sarif
-          else
-            echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}'> ./gitleaks-results.sarif
+          if [ -f gitleaks-results.sarif ]; then
+            echo "gitleaks-results.sarif is present"
+          elif [ -f results.sarif ]; then
+            mv results.sarif gitleaks-results.sarif
+          elif [ -f gitleaks.sarif ]; then
+            mv gitleaks.sarif gitleaks-results.sarif
           fi
+          [ -f gitleaks-results.sarif ] || echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks"}},"results":[]}]}'> gitleaks-results.sarif
 
-      - name: Set up Python (for Semgrep CLI)
+      # --- Semgrep (SARIF) ---
+      - name: Set up Python for Semgrep
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -44,29 +51,55 @@ jobs:
       - name: Run Semgrep (SARIF)
         run: |
           semgrep scan --config auto --sarif-output=semgrep.sarif || true
-          [ -f semgrep.sarif ] || echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"semgrep","informationUri":"https://semgrep.dev"}},"results":[]}]}'> semgrep.sarif
+          [ -f semgrep.sarif ] || echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"semgrep"}},"results":[]}]}'> semgrep.sarif
 
+      # --- npm audit (если есть package.json) ---
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install dependencies
-        run: npm install || echo "No package.json or lock file, skipping install"
+      - name: Install dependencies (optional)
+        run: |
+          if [ -f package.json ]; then
+            npm ci || npm i || true
+          else
+            echo "skip npm install (no package.json)"
+          fi
         continue-on-error: true
 
-      - name: Run npm audit
-        run: npm audit --audit-level=high --json > sast-npm-audit.json 2>/dev/null || echo '{"metadata":{"vulnerabilities":{"info":0,"low":0,"moderate":0,"high":0,"critical":0}},"vulnerabilities":[]}' > sast-npm-audit.json
+      - name: npm audit (json)
+        run: |
+          if [ -f package.json ]; then
+            npm audit --audit-level=high --json > sast-npm-audit.json 2>/dev/null || \
+            echo '{"metadata":{"vulnerabilities":{"info":0,"low":0,"moderate":0,"high":0,"critical":0}},"vulnerabilities":[]}' > sast-npm-audit.json
+          else
+            echo '{"metadata":{"vulnerabilities":{"info":0,"low":0,"moderate":0,"high":0,"critical":0}},"vulnerabilities":[]}' > sast-npm-audit.json
+          fi
         continue-on-error: true
 
-      - name: Upload SAST reports
+      # --- Артефакты + загрузка в Security tab ---
+      - name: Upload SAST artifacts
         uses: actions/upload-artifact@v4
         with:
           name: sast-reports
           path: |
-            ./gitleaks-results.sarif
-            ./semgrep.sarif
-            ./sast-npm-audit.json
+            gitleaks-results.sarif
+            semgrep.sarif
+            sast-npm-audit.json
+        if: always()
+
+      - name: Upload SARIF to Security tab (Gitleaks)
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gitleaks-results.sarif
+        if: always()
+        continue-on-error: true
+
+      - name: Upload SARIF to Security tab (Semgrep)
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
         if: always()
 
   # ---------- Build & Push ----------
@@ -109,7 +142,7 @@ jobs:
             --build-arg NETLIFY_CMS_AUTH_HASH=${{ secrets.NETLIFY_CMS_AUTH_HASH }} \
             --build-arg OAUTH_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }} \
             --build-arg OAUTH_CLIENT_SECRET=${{ secrets.OAUTH_CLIENT_SECRET }} \
-            --build-arg ORIGINS=${{ secrets.ORIGINS }} \
+            --build-arg ORIGINS='${{ secrets.ORIGINS }}' \
             -t "$IMAGE:$TAG" -t "$IMAGE:latest" .
           docker push "$IMAGE:$TAG"
           docker push "$IMAGE:latest"
@@ -151,44 +184,42 @@ jobs:
             echo "$YC_IAM_TOKEN" | docker login -u iam --password-stdin cr.yandex
 
             mkdir -p ~/decap-staging
-
-            # открыть порты
             sudo ufw allow 80 || true
-            sudo ufw allow 8080 || true
 
             IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
 
-            # container.env: только хосты в ORIGINS (без схем/портов)
+            # container.env
             cat > ~/decap-staging/container.env <<'ENV'
             PORT=80
             HOST=0.0.0.0
             ORIGINS=${{ secrets.ORIGINS }}
+            NODE_ENV=production
             ENV
-            # на случай CRLF из Git
             sed -i 's/\r$//' ~/decap-staging/container.env
 
-            # docker-compose.yml — публикуем 80 (UI) и 8080 (OAuth)
+            # docker-compose.yml — публикуем только 80
             cat > ~/decap-staging/docker-compose.yml <<YML
             services:
-            cms:
+              cms:
                 image: ${IMAGE}
                 ports:
-                - "80:80"
+                  - "80:80"
                 restart: unless-stopped
                 env_file:
-                - ./container.env
+                  - ./container.env
                 volumes:
-                - ./config.yml:/app/config.yml:ro
-                - ./container.env:/app/.env:ro
+                  - ./config.yml:/app/config.yml:ro
+                  - ./container.env:/app/.env:ro
             YML
 
-            # config.yml — base_url указывает на OAuth-порт 8080
+            # config.yml — OAuth через /auth,/callback на том же хосте
             cat > ~/decap-staging/config.yml <<CFG
             backend:
               name: github
-              repo: user/example-blog
-              branch: master
-              base_url: http://${{ secrets.STAGING_VM_HOST }}:8080
+              repo: redsmilerus/content-repo
+              branch: main
+              base_url: http://${{ secrets.STAGING_VM_HOST }}
+              auth_endpoint: auth
               commit_messages:
                 create: "Create {{collection}} “{{slug}}”"
                 update: "Update {{collection}} “{{slug}}”"
@@ -226,36 +257,24 @@ jobs:
             docker compose -f ~/decap-staging/docker-compose.yml pull
             docker compose -f ~/decap-staging/docker-compose.yml up -d
 
-            # Ждём строк готовности из логов (до 60 сек)
-            t0=$(date +%s)
-            ready_ui=0; ready_oauth=0
-            while :; do
-              logs="$(docker logs decap-staging-cms-1 2>&1 | tail -n 200 || true)"
-              echo "$logs" | grep -q "Decap CMS listening on port 80" && ready_ui=1 || true
-              echo "$logs" | grep -Eq "OAuth provider listening on port 8080|Netlify CMS OAuth provider listening on port 8080" && ready_oauth=1 || true
-              if [ $ready_ui -eq 1 ] && [ $ready_oauth -eq 1 ]; then
-                echo "Both UI(80) and OAuth(8080) are listening."; break
-              fi
-              [ $(( $(date +%s) - t0 )) -gt 60 ] && { echo "Timeout waiting for servers"; echo "$logs"; exit 1; }
+            # ждём готовности
+            t0=$(date +%s); while :; do
+              logs="$(docker logs $(docker compose -f ~/decap-staging/docker-compose.yml ps -q cms) 2>&1 | tail -n 200 || true)"
+              echo "$logs" | grep -q "Decap CMS listening on port" && break || true
+              [ $(( $(date +%s) - t0 )) -gt 60 ] && { echo "Timeout"; echo "$logs"; exit 1; }
               sleep 2
             done
 
-            # Локальный health: сначала HEAD /, если пусто — GET /#/
-            if ! curl -fsSI http://localhost/ >/dev/null; then
-              curl -fsSL http://localhost/#/ >/dev/null
-            fi
-            # Проверим, что OAuth-порт отвечает хоть чем-то
-            curl -fsSI http://localhost:8080/ >/dev/null || echo "OAuth port (8080) did not answer HEAD (may be fine)"
+            # Health (локальный)
+            curl -fsSI http://localhost/ >/dev/null || curl -fsSL http://localhost/#/ >/dev/null
 
             docker ps
-            docker logs --tail=200 decap-staging-cms-1 || true
+            docker logs --tail=200 $(docker compose -f ~/decap-staging/docker-compose.yml ps -q cms) || true
 
       - name: Health check (public)
         run: |
           set -e
-          if curl -fsSI --max-time 30 "http://${{ secrets.STAGING_VM_HOST }}/" >/dev/null; then
-            exit 0
-          fi
+          curl -fsSI --max-time 30 "http://${{ secrets.STAGING_VM_HOST }}/" >/dev/null || \
           curl -fsSL --max-time 30 "http://${{ secrets.STAGING_VM_HOST }}/#/" >/dev/null
 
   # ---------- DAST ----------
@@ -277,7 +296,6 @@ jobs:
           path: |
             dast-report.json
             dast-report.html
-        if: always()
 
   # ---------- Image Scan ----------
   image-scan:
@@ -318,10 +336,16 @@ jobs:
         continue-on-error: true
 
       - name: Upload Trivy SARIF
+        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-image.sarif
-        if: always()
+
+      - name: Upload Image Scan artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-scan-reports
+          path: trivy-image.sarif
 
   # ---------- Security Gateway ----------
   security-gateway:
@@ -333,36 +357,45 @@ jobs:
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
+        with:
+          path: ./_artifacts
 
-      - name: Guard missing files
+      - name: Normalize paths
         run: |
           mkdir -p sast-reports dast-reports image-scan-reports
+          cp -f _artifacts/sast-reports/* sast-reports/ 2>/dev/null || true
+          cp -f _artifacts/dast-reports/* dast-reports/ 2>/dev/null || true
+          cp -f _artifacts/image-scan-reports/* image-scan-reports/ 2>/dev/null || true
           : > sast-reports/gitleaks-results.sarif
           : > sast-reports/semgrep.sarif
           : > sast-reports/sast-npm-audit.json
           : > dast-reports/dast-report.json
           : > image-scan-reports/trivy-image.sarif
+          # заполняем пустые, если исходных не было
+          for f in gitleaks-results.sarif semgrep.sarif sast-npm-audit.json; do
+            [ -s "sast-reports/$f" ] || echo '{}' > "sast-reports/$f"
+          done
+          [ -s dast-reports/dast-report.json ] || echo '{"site":[]}' > dast-reports/dast-report.json
+          [ -s image-scan-reports/trivy-image.sarif ] || echo '{"runs":[{"results":[]}]}'> image-scan-reports/trivy-image.sarif
 
       - name: Check for critical vulnerabilities
         run: |
+          set -e
           # Gitleaks: любые находки — fail
-          if jq '.runs[0].results | length > 0' sast-reports/gitleaks-results.sarif | grep -q '^[1-9]'; then exit 1; fi
-          # Semgrep: только level=="error" валит сборку
-          if [ -f sast-reports/semgrep.sarif ]; then
-            if jq '.runs[].results[]? | select(.level=="error")' sast-reports/semgrep.sarif | grep -q .; then exit 1; fi
-          fi
+          if jq '.runs[0].results | length' sast-reports/gitleaks-results.sarif | grep -q '^[1-9]'; then
+            echo "Gitleaks findings"; exit 1; fi
+          # Semgrep: level=="error"
+          if jq '.runs[]?.results[]? | select(.level=="error")' sast-reports/semgrep.sarif | grep -q .; then
+            echo "Semgrep errors"; exit 1; fi
           # npm audit: high/critical
-          if [ -s sast-reports/sast-npm-audit.json ]; then
-            if jq -e '.metadata.vulnerabilities.high > 0 or .metadata.vulnerabilities.critical > 0' sast-reports/sast-npm-audit.json; then exit 1; fi
-          fi
+          if jq -e '.metadata.vulnerabilities.high > 0 or .metadata.vulnerabilities.critical > 0' sast-reports/sast-npm-audit.json; then
+            echo "npm audit high/critical"; exit 1; fi
           # ZAP: риск > 2 (High/Critical)
-          if [ -s dast-reports/dast-report.json ]; then
-            if jq '.site[]?.alerts[]? | select((.riskcode|tonumber) > 2)' dast-reports/dast-report.json | grep -q .; then exit 1; fi
-          fi
-          # Trivy: level=="error"
-          if [ -s image-scan-reports/trivy-image.sarif ]; then
-            if jq '.runs[].results[]? | select(.level=="error")' image-scan-reports/trivy-image.sarif | grep -q .; then exit 1; fi
-          fi
+          if jq '.site[]?.alerts[]? | select((.riskcode|tonumber) > 2)' dast-reports/dast-report.json | grep -q .; then
+            echo "ZAP High/Critical"; exit 1; fi
+          # Trivy: level=="error" (sarif)
+          if jq '.runs[]?.results[]? | select(.level=="error")' image-scan-reports/trivy-image.sarif | grep -q .; then
+            echo "Trivy errors"; exit 1; fi
 
   # ---------- Deploy: Prod ----------
   deploy-prod:
@@ -399,11 +432,8 @@ jobs:
           script: |
             set -euo pipefail
             echo "$YC_IAM_TOKEN" | docker login -u iam --password-stdin cr.yandex
-
             mkdir -p ~/decap-prod
-
             sudo ufw allow 80 || true
-            sudo ufw allow 8080 || true
 
             IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
 
@@ -411,6 +441,7 @@ jobs:
             PORT=80
             HOST=0.0.0.0
             ORIGINS=${{ secrets.ORIGINS }}
+            NODE_ENV=production
             ENV
             sed -i 's/\r$//' ~/decap-prod/container.env
 
@@ -420,7 +451,6 @@ jobs:
                 image: ${IMAGE}
                 ports:
                   - "80:80"
-                  - "8080:8080"
                 restart: unless-stopped
                 env_file:
                   - ./container.env
@@ -432,9 +462,10 @@ jobs:
             cat > ~/decap-prod/config.yml <<CFG
             backend:
               name: github
-              repo: user/example-blog
-              branch: master
-              base_url: http://${{ secrets.VM_HOST }}:8080
+              repo: redsmilerus/content-repo
+              branch: main
+              base_url: http://${{ secrets.VM_HOST }}
+              auth_endpoint: auth
               commit_messages:
                 create: "Create {{collection}} “{{slug}}”"
                 update: "Update {{collection}} “{{slug}}”"
@@ -472,32 +503,21 @@ jobs:
             docker compose -f ~/decap-prod/docker-compose.yml pull
             docker compose -f ~/decap-prod/docker-compose.yml up -d
 
-            # Ждём готовности по логам
-            t0=$(date +%s)
-            ready_ui=0; ready_oauth=0
-            while :; do
-              logs="$(docker logs decap-prod-cms-1 2>&1 | tail -n 200 || true)"
-              echo "$logs" | grep -q "Decap CMS listening on port 80" && ready_ui=1 || true
-              echo "$logs" | grep -Eq "OAuth provider listening on port 8080|Netlify CMS OAuth provider listening on port 8080" && ready_oauth=1 || true
-              if [ $ready_ui -eq 1 ] && [ $ready_oauth -eq 1 ]; then
-                echo "Both UI(80) and OAuth(8080) are listening."; break
-              fi
-              [ $(( $(date +%s) - t0 )) -gt 60 ] && { echo "Timeout waiting for servers"; echo "$logs"; exit 1; }
+            # ready
+            t0=$(date +%s); while :; do
+              logs="$(docker logs $(docker compose -f ~/decap-prod/docker-compose.yml ps -q cms) 2>&1 | tail -n 200 || true)"
+              echo "$logs" | grep -q "Decap CMS listening on port" && break || true
+              [ $(( $(date +%s) - t0 )) -gt 60 ] && { echo "Timeout"; echo "$logs"; exit 1; }
               sleep 2
             done
 
-            if ! curl -fsSI http://localhost/ >/dev/null; then
-              curl -fsSL http://localhost/#/ >/dev/null
-            fi
-            curl -fsSI http://localhost:8080/ >/dev/null || echo "OAuth port (8080) did not answer HEAD"
+            curl -fsSI http://localhost/ >/dev/null || curl -fsSL http://localhost/#/ >/dev/null
 
             docker ps
-            docker logs --tail=200 decap-prod-cms-1 || true
+            docker logs --tail=200 $(docker compose -f ~/decap-prod/docker-compose.yml ps -q cms) || true
 
       - name: Health check (public)
         run: |
           set -e
-          if curl -fsSI --max-time 30 "http://${{ secrets.VM_HOST }}/" >/dev/null; then
-            exit 0
-          fi
+          curl -fsSI --max-time 30 "http://${{ secrets.VM_HOST }}/" >/dev/null || \
           curl -fsSL --max-time 30 "http://${{ secrets.VM_HOST }}/#/" >/dev/null
