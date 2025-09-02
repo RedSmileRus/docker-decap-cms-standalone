@@ -21,26 +21,17 @@ jobs:
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
-          GITLEAKS_COMMAND: "detect --redact --verbose --exit-code=2 --report-format=sarif --report-path=./gitleaks-results.sarif --log-level=debug"
+          GITLEAKS_COMMAND: "detect --redact --verbose --exit-code=2 --report-format=sarif --report-path=./results.sarif --log-level=debug"
         continue-on-error: true
-      - name: Extract Gitleaks SARIF from zip
+      - name: Extract Gitleaks SARIF
         run: |
-          echo "Checking for gitleaks-results.sarif.zip"
+          echo "Checking for results.sarif"
           ls -la
-          if [ -f gitleaks-results.sarif.zip ]; then
-            unzip -o gitleaks-results.sarif.zip -d .
-            if [ -f ./gitleaks-results.sarif ]; then
-              echo "SARIF file extracted successfully to ./gitleaks-results.sarif"
-            else
-              echo "No SARIF file in zip, searching for alternatives..."
-              find . -name "gitleaks-results.sarif" -exec mv {} ./gitleaks-results.sarif \;
-              if [ ! -f ./gitleaks-results.sarif ]; then
-                echo "No SARIF file found, creating empty SARIF"
-                echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}' > ./gitleaks-results.sarif
-              fi
-            fi
+          if [ -f ./results.sarif ]; then
+            echo "Renaming results.sarif to ./gitleaks-results.sarif"
+            mv ./results.sarif ./gitleaks-results.sarif
           else
-            echo "No Gitleaks zip found, creating empty SARIF"
+            echo "No results.sarif found, creating empty SARIF"
             echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}' > ./gitleaks-results.sarif
           fi
       - name: Run Semgrep
@@ -48,13 +39,13 @@ jobs:
         with:
           config: auto
           publishToken: ${{ secrets.SEMGREP_APP_TOKEN }}
-          args: --sarif  # Добавляем флаг для локальной генерации SARIF
+          args: --sarif  # Для локальной генерации SARIF
         continue-on-error: true
       - name: Debug Semgrep output
         run: |
           ls -la .
           if [ -f semgrep.sarif ]; then
-            echo "Semgrep SARIF generated successfully"
+            echo "Semgrep SARIF generated successfully at $(pwd)/semgrep.sarif"
           else
             echo "Semgrep SARIF not found, check logs above"
           fi
