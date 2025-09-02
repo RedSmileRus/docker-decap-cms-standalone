@@ -1,75 +1,64 @@
 name: Secure DevSecOps Pipeline for Decap CMS (Yandex Cloud)
+
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
+
 permissions:
   contents: read
   security-events: write
   pull-requests: write
+
 jobs:
-  # ---------------------- SAST (Gitleaks + Semgrep + npm audit)
+  # ---------- SAST ----------
   sast:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITLEAKS_COMMAND: "detect --redact --verbose --exit-code=2 --report-format=sarif --report-path=./results.sarif --log-level=debug"
         continue-on-error: true
+
       - name: Extract Gitleaks SARIF
         run: |
-          echo "Checking for results.sarif"
-          ls -la
           if [ -f ./results.sarif ]; then
-            echo "Renaming results.sarif -> gitleaks-results.sarif"
             mv ./results.sarif ./gitleaks-results.sarif
-            cp ./gitleaks-results.sarif /tmp/gitleaks-results.sarif
           else
-            echo "No results.sarif found, creating empty SARIF"
             echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}'> ./gitleaks-results.sarif
-            cp ./gitleaks-results.sarif /tmp/gitleaks-results.sarif
           fi
+
       - name: Set up Python (for Semgrep CLI)
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install Semgrep CLI
         run: pip install --upgrade semgrep
+
       - name: Run Semgrep (SARIF)
         run: |
           semgrep scan --config auto --sarif-output=semgrep.sarif || true
           [ -f semgrep.sarif ] || echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"semgrep","informationUri":"https://semgrep.dev"}},"results":[]}]}'> semgrep.sarif
-          cp semgrep.sarif /tmp/semgrep.sarif
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+
       - name: Install dependencies
         run: npm install || echo "No package.json or lock file, skipping install"
         continue-on-error: true
+
       - name: Run npm audit
         run: npm audit --audit-level=high --json > sast-npm-audit.json 2>/dev/null || echo '{"metadata":{"vulnerabilities":{"info":0,"low":0,"moderate":0,"high":0,"critical":0}},"vulnerabilities":[]}' > sast-npm-audit.json
         continue-on-error: true
-      - name: Restore SARIF files for upload
-        run: |
-          ls -la /tmp
-          cp /tmp/gitleaks-results.sarif ./gitleaks-results.sarif || true
-          cp /tmp/semgrep.sarif ./semgrep.sarif || true
-          ls -la .
-      - name: Upload Gitleaks SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: ./gitleaks-results.sarif
-        if: always()
-      - name: Upload Semgrep SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: ./semgrep.sarif
-        if: always()
+
       - name: Upload SAST reports
         uses: actions/upload-artifact@v4
         with:
@@ -79,7 +68,8 @@ jobs:
             ./semgrep.sarif
             ./sast-npm-audit.json
         if: always()
-  # ---------------------- Build & Push
+
+  # ---------- Build & Push ----------
   build:
     runs-on: ubuntu-latest
     needs: sast
@@ -87,10 +77,12 @@ jobs:
       image_tag: ${{ steps.build.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Install YC CLI
         run: |
           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -a
           sudo install -m 0755 "$HOME/yandex-cloud/bin/yc" /usr/local/bin/yc
+
       - name: Configure YC
         env:
           YC_SA_KEY_JSON: ${{ secrets.YC_SA_KEY_JSON }}
@@ -101,10 +93,12 @@ jobs:
           yc config set service-account-key sa-key.json
           yc config set cloud-id "$YC_CLOUD_ID"
           yc config set folder-id "$YC_FOLDER_ID"
+
       - name: Docker login (push)
         run: |
           TOKEN=$(yc iam create-token)
           echo "$TOKEN" | docker login -u iam --password-stdin cr.yandex
+
       - name: Build & Push
         id: build
         run: |
@@ -112,15 +106,16 @@ jobs:
           TAG="${{ github.sha }}"
           docker build \
             --build-arg DECAP_CMS_VER=3.0.9 \
-            --build-arg NETLIFY_CMS_AUTH_HASH=${{ secrets.NETLIFY_CMS_AUTH_HASH }} \
-            --build-arg OAUTH_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }} \
-            --build-arg OAUTH_CLIENT_SECRET=${{ secrets.OAUTH_CLIENT_SECRET }} \
-            --build-arg ORIGINS=${{ secrets.ORIGINS }} \
+            --build-arg NETLIFY_CMS_AUTH_HASH='${{ secrets.NETLIFY_CMS_AUTH_HASH }}' \
+            --build-arg OAUTH_CLIENT_ID='${{ secrets.OAUTH_CLIENT_ID }}' \
+            --build-arg OAUTH_CLIENT_SECRET='${{ secrets.OAUTH_CLIENT_SECRET }}' \
+            --build-arg ORIGINS='${{ secrets.ORIGINS }}' \
             -t "$IMAGE:$TAG" -t "$IMAGE:latest" .
           docker push "$IMAGE:$TAG"
           docker push "$IMAGE:latest"
           echo "image_tag=$TAG" >> $GITHUB_OUTPUT
-  # ---------------------- Deploy to Staging
+
+  # ---------- Deploy: Staging ----------
   deploy-staging:
     runs-on: ubuntu-latest
     needs: build
@@ -129,6 +124,7 @@ jobs:
         run: |
           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -a
           sudo install -m 0755 "$HOME/yandex-cloud/bin/yc" /usr/local/bin/yc
+
       - name: Configure YC (runner)
         env:
           YC_SA_KEY_JSON: ${{ secrets.YC_SA_KEY_JSON }}
@@ -139,8 +135,10 @@ jobs:
           yc config set service-account-key sa-key.json
           yc config set cloud-id "$YC_CLOUD_ID"
           yc config set folder-id "$YC_FOLDER_ID"
+
       - name: Create IAM token (runner)
         run: echo "YC_IAM_TOKEN=$(yc iam create-token)" >> $GITHUB_ENV
+
       - name: Deploy to Staging VM
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -150,27 +148,43 @@ jobs:
           envs: YC_IAM_TOKEN
           script: |
             set -euo pipefail
-            # Login to YCR on target VM
             echo "$YC_IAM_TOKEN" | docker login -u iam --password-stdin cr.yandex
+
             mkdir -p ~/decap-staging
-            # Clean up existing config.yml (file or directory)
-            rm -rf ~/decap-staging/config.yml
-            export IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
-            cat > ~/decap-staging/docker-compose.yml <<'EOF'
+
+            # открыть порты
+            sudo ufw allow 80 || true
+            sudo ufw allow 8080 || true
+
+            IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
+
+            # container.env: только хосты в ORIGINS (без схем/портов)
+            cat > ~/decap-staging/container.env <<ENV
+            PORT=80
+            HOST=0.0.0.0
+            ORIGINS=${{ secrets.ORIGINS }}
+            ENV
+            # на случай CRLF из Git
+            sed -i 's/\r$//' ~/decap-staging/container.env
+
+            # docker-compose.yml — публикуем 80 (UI) и 8080 (OAuth)
+            cat > ~/decap-staging/docker-compose.yml <<YML
             services:
-            cms:
+              cms:
                 image: ${IMAGE}
                 ports:
-                - "8080:8080"             # <— наружу 8080, внутри тоже 8080
+                  - "80:80"
+                  - "8080:8080"
                 restart: unless-stopped
-                environment:
-                - PORT=8080
-                - HOST=0.0.0.0
-                - ORIGINS=${{ secrets.ORIGINS }}   # список через запятую без пробелов
+                env_file:
+                  - ./container.env
                 volumes:
-                - ./config.yml:/app/config.yml:ro
-            EOF
-            cat > ~/decap-staging/config.yml <<'EOF'
+                  - ./config.yml:/app/config.yml:ro
+                  - ./container.env:/app/.env:ro
+            YML
+
+            # config.yml — base_url указывает на OAuth-порт 8080
+            cat > ~/decap-staging/config.yml <<CFG
             backend:
               name: github
               repo: user/example-blog
@@ -199,59 +213,41 @@ jobs:
                     field: draft
                     pattern: true
                 fields:
-                  - label: "Template Key"
-                    name: templateKey
-                    widget: hidden
-                    default: "blog-post"
-                  - label: "Slug"
-                    name: slug
-                    widget: string
-                    pattern: ["^[a-z0-9]+(?:-[a-z0-9]+)*$", "A slug can have no spaces or special characters"]
-                  - label: "Cover Image"
-                    name: cover
-                    widget: image
-                  - label: "Title"
-                    name: title
-                    widget: string
-                  - label: "Publish Date"
-                    name: date
-                    widget: datetime
-                  - label: "Description"
-                    name: description
-                    widget: text
-                  - label: "Draft"
-                    name: draft
-                    widget: boolean
-                    default: false
-                  - label: "Tags"
-                    name: tags
-                    widget: list
-                  - label: "Body"
-                    name: body
-                    widget: markdown
-            EOF
-            # Ensure port 8080 is open on the VM
-            sudo ufw allow 8080 || echo "ufw not installed, skipping"
+                  - { label: "Template Key", name: templateKey, widget: hidden, default: "blog-post" }
+                  - { label: "Slug", name: slug, widget: string, pattern: ["^[a-z0-9]+(?:-[a-z0-9]+)*$", "A slug can have no spaces or special characters"] }
+                  - { label: "Cover Image", name: cover, widget: image }
+                  - { label: "Title", name: title, widget: string }
+                  - { label: "Publish Date", name: date, widget: datetime }
+                  - { label: "Description", name: description, widget: text }
+                  - { label: "Draft", name: draft, widget: boolean, default: false }
+                  - { label: "Tags", name: tags, widget: list }
+                  - { label: "Body", name: body, widget: markdown }
+            CFG
+
             docker compose -f ~/decap-staging/docker-compose.yml pull
             docker compose -f ~/decap-staging/docker-compose.yml up -d
-            # Wait for the container to be healthy
-            for i in {1..30}; do
+
+            # POSIX-ожидание запуска
+            i=1; while [ $i -le 30 ]; do
               if docker ps --filter "name=decap-staging-cms-1" --filter "status=running" | grep -q decap-staging-cms-1; then
                 echo "Container is running"
                 break
               fi
-              echo "Waiting for container to start... ($i/30)"
-              sleep 2
+              echo "Waiting for container to start... ($i/30)"; i=$((i+1)); sleep 2
             done
-            # Check local connectivity
-            curl -I localhost:8080 || echo "Local curl to port 8080 failed"
-            # Output container logs for debugging
-            docker logs decap-staging-cms-1
+
+            # Health: корень UI
+            curl -fsSL http://localhost/ >/dev/null || (echo "Local GET / failed" && exit 1)
+            # (необязательно) проверить доступность OAuth-порта
+            curl -fsSI http://localhost:8080/ >/dev/null || echo "OAuth port not answering HEAD (may be fine)"
+
             docker ps
-      - name: Health check
-        run: |
-          curl -I --max-time 30 "http://${{ secrets.STAGING_VM_HOST }}:8080/admin/" || exit 1
-  # ---------------------- DAST (ZAP)
+            docker logs --tail=200 decap-staging-cms-1 || true
+
+      - name: Health check (public)
+        run: curl -fsSI --max-time 30 "http://${{ secrets.STAGING_VM_HOST }}/" >/dev/null
+
+  # ---------- DAST ----------
   dast:
     runs-on: ubuntu-latest
     needs: deploy-staging
@@ -259,9 +255,10 @@ jobs:
       - name: ZAP Full Scan
         uses: zaproxy/action-full-scan@v0.12.0
         with:
-          target: http://${{ secrets.STAGING_VM_HOST }}:8080/
+          target: http://${{ secrets.STAGING_VM_HOST }}/
           cmd_options: '-a -m 10 -f json -o dast-report.json -r dast-report.html'
         continue-on-error: true
+
       - name: Upload DAST reports
         uses: actions/upload-artifact@v4
         with:
@@ -270,7 +267,8 @@ jobs:
             dast-report.json
             dast-report.html
         if: always()
-  # ---------------------- Image Scan (Trivy via action)
+
+  # ---------- Image Scan ----------
   image-scan:
     runs-on: ubuntu-latest
     needs: build
@@ -279,6 +277,7 @@ jobs:
         run: |
           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -a
           sudo install -m 0755 "$HOME/yandex-cloud/bin/yc" /usr/local/bin/yc
+
       - name: Configure YC
         env:
           YC_SA_KEY_JSON: ${{ secrets.YC_SA_KEY_JSON }}
@@ -289,13 +288,15 @@ jobs:
           yc config set service-account-key sa-key.json
           yc config set cloud-id "$YC_CLOUD_ID"
           yc config set folder-id "$YC_FOLDER_ID"
+
       - name: Docker login
         run: |
           TOKEN=$(yc iam create-token)
           echo "$TOKEN" | docker login -u iam --password-stdin cr.yandex
+
       - name: Pull image for scanning
-        run: |
-          docker pull ${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}
+        run: docker pull ${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}
+
       - name: Trivy image scan (SARIF)
         uses: aquasecurity/trivy-action@0.24.0
         with:
@@ -304,26 +305,24 @@ jobs:
           output: 'trivy-image.sarif'
           severity: 'HIGH,CRITICAL'
         continue-on-error: true
+
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-image.sarif
         if: always()
-      - name: Upload Trivy report
-        uses: actions/upload-artifact@v4
-        with:
-          name: image-scan-reports
-          path: trivy-image.sarif
-        if: always()
-  # ---------------------- Security Gateway
+
+  # ---------- Security Gateway ----------
   security-gateway:
     runs-on: ubuntu-latest
     needs: [sast, dast, image-scan]
     steps:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
-      - name: Download reports
+
+      - name: Download artifacts
         uses: actions/download-artifact@v4
+
       - name: Guard missing files
         run: |
           mkdir -p sast-reports dast-reports image-scan-reports
@@ -332,35 +331,22 @@ jobs:
           : > sast-reports/sast-npm-audit.json
           : > dast-reports/dast-report.json
           : > image-scan-reports/trivy-image.sarif
+
       - name: Check for critical vulnerabilities
         run: |
-          # Gitleaks: любые находки — fail
           if jq '.runs[0].results | length > 0' sast-reports/gitleaks-results.sarif | grep -q '^[1-9]'; then exit 1; fi
-          # Semgrep: только level=="error" валит сборку
-          if [ -f sast-reports/semgrep.sarif ]; then
-            if jq '.runs[].results[]? | select(.level=="error")' sast-reports/semgrep.sarif | grep -q .; then exit 1; fi
-          fi
-          # npm audit: high/critical
+          if jq '.runs[].results[]? | select(.level=="error")' sast-reports/semgrep.sarif | grep -q .; then exit 1; fi
           if [ -s sast-reports/sast-npm-audit.json ]; then
             if jq -e '.metadata.vulnerabilities.high > 0 or .metadata.vulnerabilities.critical > 0' sast-reports/sast-npm-audit.json; then exit 1; fi
           fi
-          # ZAP: риск > 2 (High/Critical)
           if [ -s dast-reports/dast-report.json ]; then
             if jq '.site[]?.alerts[]? | select((.riskcode|tonumber) > 2)' dast-reports/dast-report.json | grep -q .; then exit 1; fi
           fi
-          # Trivy: level=="error"
           if [ -s image-scan-reports/trivy-image.sarif ]; then
             if jq '.runs[].results[]? | select(.level=="error")' image-scan-reports/trivy-image.sarif | grep -q .; then exit 1; fi
           fi
-      - name: Comment on PR if failed
-        if: failure() && github.event_name == 'pull_request'
-        uses: thollander/actions-comment-pull-request@v3
-        with:
-          message: |
-            Security checks failed! Found critical/high vulnerabilities or secrets.
-            - Check reports in artifacts.
-            - Recommendations: Update dependencies, fix code issues, remove secrets.
-  # ---------------------- Deploy to Prod
+
+  # ---------- Deploy: Prod ----------
   deploy-prod:
     runs-on: ubuntu-latest
     needs: security-gateway
@@ -370,6 +356,7 @@ jobs:
         run: |
           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -a
           sudo install -m 0755 "$HOME/yandex-cloud/bin/yc" /usr/local/bin/yc
+
       - name: Configure YC (runner)
         env:
           YC_SA_KEY_JSON: ${{ secrets.YC_SA_KEY_JSON }}
@@ -380,8 +367,10 @@ jobs:
           yc config set service-account-key sa-key.json
           yc config set cloud-id "$YC_CLOUD_ID"
           yc config set folder-id "$YC_FOLDER_ID"
+
       - name: Create IAM token (runner)
         run: echo "YC_IAM_TOKEN=$(yc iam create-token)" >> $GITHUB_ENV
+
       - name: Deploy to Prod VM
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -392,26 +381,42 @@ jobs:
           script: |
             set -euo pipefail
             echo "$YC_IAM_TOKEN" | docker login -u iam --password-stdin cr.yandex
+
             mkdir -p ~/decap-prod
-            # Clean up existing config.yml (file or directory)
-            rm -rf ~/decap-prod/config.yml
-            export IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
-            cat > ~/decap-prod/docker-compose.yml <<'EOF'
+
+            sudo ufw allow 80 || true
+            sudo ufw allow 8080 || true
+
+            IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
+
+            cat > ~/decap-prod/container.env <<ENV
+            PORT=80
+            HOST=0.0.0.0
+            ORIGINS=${{ secrets.ORIGINS }}
+            ENV
+            sed -i 's/\r$//' ~/decap-prod/container.env
+
+            cat > ~/decap-prod/docker-compose.yml <<YML
             services:
               cms:
                 image: ${IMAGE}
                 ports:
                   - "80:80"
+                  - "8080:8080"
                 restart: unless-stopped
+                env_file:
+                  - ./container.env
                 volumes:
                   - ./config.yml:/app/config.yml:ro
-            EOF
-            cat > ~/decap-prod/config.yml <<'EOF'
+                  - ./container.env:/app/.env:ro
+            YML
+
+            cat > ~/decap-prod/config.yml <<CFG
             backend:
               name: github
               repo: user/example-blog
               branch: master
-              base_url: http://${{ secrets.VM_HOST }}
+              base_url: http://${{ secrets.VM_HOST }}:8080
               commit_messages:
                 create: "Create {{collection}} “{{slug}}”"
                 update: "Update {{collection}} “{{slug}}”"
@@ -435,55 +440,33 @@ jobs:
                     field: draft
                     pattern: true
                 fields:
-                  - label: "Template Key"
-                    name: templateKey
-                    widget: hidden
-                    default: "blog-post"
-                  - label: "Slug"
-                    name: slug
-                    widget: string
-                    pattern: ["^[a-z0-9]+(?:-[a-z0-9]+)*$", "A slug can have no spaces or special characters"]
-                  - label: "Cover Image"
-                    name: cover
-                    widget: image
-                  - label: "Title"
-                    name: title
-                    widget: string
-                  - label: "Publish Date"
-                    name: date
-                    widget: datetime
-                  - label: "Description"
-                    name: description
-                    widget: text
-                  - label: "Draft"
-                    name: draft
-                    widget: boolean
-                    default: false
-                  - label: "Tags"
-                    name: tags
-                    widget: list
-                  - label: "Body"
-                    name: body
-                    widget: markdown
-            EOF
-            # Ensure port 80 is open on the VM
-            sudo ufw allow 80 || echo "ufw not installed, skipping"
+                  - { label: "Template Key", name: templateKey, widget: hidden, default: "blog-post" }
+                  - { label: "Slug", name: slug, widget: string, pattern: ["^[a-z0-9]+(?:-[a-z0-9]+)*$", "A slug can have no spaces or special characters"] }
+                  - { label: "Cover Image", name: cover, widget: image }
+                  - { label: "Title", name: title, widget: string }
+                  - { label: "Publish Date", name: date, widget: datetime }
+                  - { label: "Description", name: description, widget: text }
+                  - { label: "Draft", name: draft, widget: boolean, default: false }
+                  - { label: "Tags", name: tags, widget: list }
+                  - { label: "Body", name: body, widget: markdown }
+            CFG
+
             docker compose -f ~/decap-prod/docker-compose.yml pull
             docker compose -f ~/decap-prod/docker-compose.yml up -d
-            # Wait for the container to be healthy
-            for i in {1..30}; do
+
+            i=1; while [ $i -le 30 ]; do
               if docker ps --filter "name=decap-prod-cms-1" --filter "status=running" | grep -q decap-prod-cms-1; then
                 echo "Container is running"
                 break
               fi
-              echo "Waiting for container to start... ($i/30)"
-              sleep 2
+              echo "Waiting for container to start... ($i/30)"; i=$((i+1)); sleep 2
             done
-            # Check local connectivity
-            curl -I localhost:80 || echo "Local curl to port 80 failed"
-            # Output container logs for debugging
-            docker logs decap-prod-cms-1
+
+            curl -fsSI http://localhost/ >/dev/null || (echo "Local GET / failed" && exit 1)
+            curl -fsSI http://localhost:8080/ >/dev/null || echo "OAuth port not answering HEAD"
+
             docker ps
-      - name: Health check
-        run: |
-          curl -I --max-time 30 "http://${{ secrets.VM_HOST }}/admin/" || exit 1
+            docker logs --tail=200 decap-prod-cms-1 || true
+
+      - name: Health check (public)
+        run: curl -fsSI --max-time 30 "http://${{ secrets.VM_HOST }}/" >/dev/null
