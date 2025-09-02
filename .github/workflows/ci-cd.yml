@@ -106,10 +106,10 @@ jobs:
           TAG="${{ github.sha }}"
           docker build \
             --build-arg DECAP_CMS_VER=3.0.9 \
-            --build-arg NETLIFY_CMS_AUTH_HASH='${{ secrets.NETLIFY_CMS_AUTH_HASH }}' \
-            --build-arg OAUTH_CLIENT_ID='${{ secrets.OAUTH_CLIENT_ID }}' \
-            --build-arg OAUTH_CLIENT_SECRET='${{ secrets.OAUTH_CLIENT_SECRET }}' \
-            --build-arg ORIGINS='${{ secrets.ORIGINS }}' \
+            --build-arg NETLIFY_CMS_AUTH_HASH=${{ secrets.NETLIFY_CMS_AUTH_HASH }} \
+            --build-arg OAUTH_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }} \
+            --build-arg OAUTH_CLIENT_SECRET=${{ secrets.OAUTH_CLIENT_SECRET }} \
+            --build-arg ORIGINS=${{ secrets.ORIGINS }} \
             -t "$IMAGE:$TAG" -t "$IMAGE:latest" .
           docker push "$IMAGE:$TAG"
           docker push "$IMAGE:latest"
@@ -158,7 +158,7 @@ jobs:
 
             IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
 
-            # container.env: только хосты в ORIGINS (без схем/портов, через запятую)
+            # container.env: только хосты в ORIGINS (без схем/портов)
             cat > ~/decap-staging/container.env <<'ENV'
             PORT=80
             HOST=0.0.0.0
@@ -167,13 +167,14 @@ jobs:
             # на случай CRLF из Git
             sed -i 's/\r$//' ~/decap-staging/container.env
 
-            # docker-compose.yml — единый порт 80 для UI и OAuth (избежать конфликта)
+            # docker-compose.yml — публикуем 80 (UI) и 8080 (OAuth)
             cat > ~/decap-staging/docker-compose.yml <<YML
             services:
               cms:
-                image: \${IMAGE}
+                image: ${IMAGE}
                 ports:
                   - "80:80"
+                  - "8080:8080"
                 restart: unless-stopped
                 env_file:
                   - ./container.env
@@ -182,13 +183,13 @@ jobs:
                   - ./container.env:/app/.env:ro
             YML
 
-            # config.yml — base_url на порт 80 (единый для UI/OAuth)
-            cat > ~/decap-staging/config.yml <<'CFG'
+            # config.yml — base_url указывает на OAuth-порт 8080
+            cat > ~/decap-staging/config.yml <<CFG
             backend:
               name: github
               repo: user/example-blog
               branch: master
-              base_url: http://${{ secrets.STAGING_VM_HOST }}
+              base_url: http://${{ secrets.STAGING_VM_HOST }}:8080
               commit_messages:
                 create: "Create {{collection}} “{{slug}}”"
                 update: "Update {{collection}} “{{slug}}”"
@@ -223,31 +224,40 @@ jobs:
                   - { label: "Body", name: body, widget: markdown }
             CFG
 
-            # Очистка перед обновлением
-            docker compose -f ~/decap-staging/docker-compose.yml down || true
-
             docker compose -f ~/decap-staging/docker-compose.yml pull
             docker compose -f ~/decap-staging/docker-compose.yml up -d
 
-            # POSIX-ожидание запуска
-            i=1; while [ $i -le 30 ]; do
-              if docker ps --filter "name=decap-staging-cms-1" --filter "status=running" | grep -q decap-staging-cms-1; then
-                echo "Container is running"
-                break
+            # Ждём строк готовности из логов (до 60 сек)
+            t0=$(date +%s)
+            ready_ui=0; ready_oauth=0
+            while :; do
+              logs="$(docker logs decap-staging-cms-1 2>&1 | tail -n 200 || true)"
+              echo "$logs" | grep -q "Decap CMS listening on port 80" && ready_ui=1 || true
+              echo "$logs" | grep -Eq "OAuth provider listening on port 8080|Netlify CMS OAuth provider listening on port 8080" && ready_oauth=1 || true
+              if [ $ready_ui -eq 1 ] && [ $ready_oauth -eq 1 ]; then
+                echo "Both UI(80) and OAuth(8080) are listening."; break
               fi
-              echo "Waiting for container to start... ($i/30)"; i=$((i+1)); sleep 2
+              [ $(( $(date +%s) - t0 )) -gt 60 ] && { echo "Timeout waiting for servers"; echo "$logs"; exit 1; }
+              sleep 2
             done
 
-            # Health: /admin (основной UI путь Decap CMS)
-            curl -fsSL http://localhost/admin >/dev/null || (echo "Local GET /admin failed" && exit 1)
-            # OAuth check (на /callback или /, в зависимости от app.js)
-            curl -fsSI http://localhost/ >/dev/null || echo "OAuth port not answering HEAD (may be fine if no root handler)"
+            # Локальный health: сначала HEAD /, если пусто — GET /#/
+            if ! curl -fsSI http://localhost/ >/dev/null; then
+              curl -fsSL http://localhost/#/ >/dev/null
+            fi
+            # Проверим, что OAuth-порт отвечает хоть чем-то
+            curl -fsSI http://localhost:8080/ >/dev/null || echo "OAuth port (8080) did not answer HEAD (may be fine)"
 
             docker ps
             docker logs --tail=200 decap-staging-cms-1 || true
 
       - name: Health check (public)
-        run: curl -fsSI --max-time 30 "http://${{ secrets.STAGING_VM_HOST }}/admin" >/dev/null
+        run: |
+          set -e
+          if curl -fsSI --max-time 30 "http://${{ secrets.STAGING_VM_HOST }}/" >/dev/null; then
+            exit 0
+          fi
+          curl -fsSL --max-time 30 "http://${{ secrets.STAGING_VM_HOST }}/#/" >/dev/null
 
   # ---------- DAST ----------
   dast:
@@ -336,14 +346,21 @@ jobs:
 
       - name: Check for critical vulnerabilities
         run: |
+          # Gitleaks: любые находки — fail
           if jq '.runs[0].results | length > 0' sast-reports/gitleaks-results.sarif | grep -q '^[1-9]'; then exit 1; fi
-          if jq '.runs[].results[]? | select(.level=="error")' sast-reports/semgrep.sarif | grep -q .; then exit 1; fi
+          # Semgrep: только level=="error" валит сборку
+          if [ -f sast-reports/semgrep.sarif ]; then
+            if jq '.runs[].results[]? | select(.level=="error")' sast-reports/semgrep.sarif | grep -q .; then exit 1; fi
+          fi
+          # npm audit: high/critical
           if [ -s sast-reports/sast-npm-audit.json ]; then
             if jq -e '.metadata.vulnerabilities.high > 0 or .metadata.vulnerabilities.critical > 0' sast-reports/sast-npm-audit.json; then exit 1; fi
           fi
+          # ZAP: риск > 2 (High/Critical)
           if [ -s dast-reports/dast-report.json ]; then
             if jq '.site[]?.alerts[]? | select((.riskcode|tonumber) > 2)' dast-reports/dast-report.json | grep -q .; then exit 1; fi
           fi
+          # Trivy: level=="error"
           if [ -s image-scan-reports/trivy-image.sarif ]; then
             if jq '.runs[].results[]? | select(.level=="error")' image-scan-reports/trivy-image.sarif | grep -q .; then exit 1; fi
           fi
@@ -401,9 +418,10 @@ jobs:
             cat > ~/decap-prod/docker-compose.yml <<YML
             services:
               cms:
-                image: \${IMAGE}
+                image: ${IMAGE}
                 ports:
                   - "80:80"
+                  - "8080:8080"
                 restart: unless-stopped
                 env_file:
                   - ./container.env
@@ -412,12 +430,12 @@ jobs:
                   - ./container.env:/app/.env:ro
             YML
 
-            cat > ~/decap-prod/config.yml <<'CFG'
+            cat > ~/decap-prod/config.yml <<CFG
             backend:
               name: github
               repo: user/example-blog
               branch: master
-              base_url: http://${{ secrets.VM_HOST }}
+              base_url: http://${{ secrets.VM_HOST }}:8080
               commit_messages:
                 create: "Create {{collection}} “{{slug}}”"
                 update: "Update {{collection}} “{{slug}}”"
@@ -452,25 +470,35 @@ jobs:
                   - { label: "Body", name: body, widget: markdown }
             CFG
 
-            # Очистка перед обновлением
-            docker compose -f ~/decap-prod/docker-compose.yml down || true
-
             docker compose -f ~/decap-prod/docker-compose.yml pull
             docker compose -f ~/decap-prod/docker-compose.yml up -d
 
-            i=1; while [ $i -le 30 ]; do
-              if docker ps --filter "name=decap-prod-cms-1" --filter "status=running" | grep -q decap-prod-cms-1; then
-                echo "Container is running"
-                break
+            # Ждём готовности по логам
+            t0=$(date +%s)
+            ready_ui=0; ready_oauth=0
+            while :; do
+              logs="$(docker logs decap-prod-cms-1 2>&1 | tail -n 200 || true)"
+              echo "$logs" | grep -q "Decap CMS listening on port 80" && ready_ui=1 || true
+              echo "$logs" | grep -Eq "OAuth provider listening on port 8080|Netlify CMS OAuth provider listening on port 8080" && ready_oauth=1 || true
+              if [ $ready_ui -eq 1 ] && [ $ready_oauth -eq 1 ]; then
+                echo "Both UI(80) and OAuth(8080) are listening."; break
               fi
-              echo "Waiting for container to start... ($i/30)"; i=$((i+1)); sleep 2
+              [ $(( $(date +%s) - t0 )) -gt 60 ] && { echo "Timeout waiting for servers"; echo "$logs"; exit 1; }
+              sleep 2
             done
 
-            curl -fsSL http://localhost/admin >/dev/null || (echo "Local GET /admin failed" && exit 1)
-            curl -fsSI http://localhost/ >/dev/null || echo "OAuth port not answering HEAD"
+            if ! curl -fsSI http://localhost/ >/dev/null; then
+              curl -fsSL http://localhost/#/ >/dev/null
+            fi
+            curl -fsSI http://localhost:8080/ >/dev/null || echo "OAuth port (8080) did not answer HEAD"
 
             docker ps
             docker logs --tail=200 decap-prod-cms-1 || true
 
       - name: Health check (public)
-        run: curl -fsSI --max-time 30 "http://${{ secrets.VM_HOST }}/admin" >/dev/null
+        run: |
+          set -e
+          if curl -fsSI --max-time 30 "http://${{ secrets.VM_HOST }}/" >/dev/null; then
+            exit 0
+          fi
+          curl -fsSL --max-time 30 "http://${{ secrets.VM_HOST }}/#/" >/dev/null
