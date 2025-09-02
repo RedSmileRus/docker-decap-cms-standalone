@@ -32,29 +32,33 @@ jobs:
             mv ./results.sarif ./gitleaks-results.sarif
             echo "Verifying file existence"
             ls -la ./gitleaks-results.sarif
-            # Копируем файл в безопасное место для сохранения
+            # Копируем файл в безопасное место с правами
             cp ./gitleaks-results.sarif /tmp/gitleaks-results.sarif
+            chmod 644 /tmp/gitleaks-results.sarif
           else
             echo "No results.sarif found, creating empty SARIF"
             echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}' > ./gitleaks-results.sarif
             cp ./gitleaks-results.sarif /tmp/gitleaks-results.sarif
+            chmod 644 /tmp/gitleaks-results.sarif
           fi
       - name: Run Semgrep
         uses: semgrep/semgrep-action@v1
         with:
           config: auto
           publishToken: ${{ secrets.SEMGREP_APP_TOKEN }}
-          args: "--config auto --sarif"  # Исправленный синтаксис: объединяем аргументы в строку
+          args: "--sarif"  # Исправленный синтаксис: только флаг --sarif
         continue-on-error: true
       - name: Debug Semgrep output
         run: |
           ls -la .
           if [ -f semgrep.sarif ]; then
             echo "Semgrep SARIF generated successfully at $(pwd)/semgrep.sarif"
-            cp semgrep.sarif /tmp/semgrep.sarif  # Сохраняем в безопасное место
+            cp semgrep.sarif /tmp/semgrep.sarif
+            chmod 644 /tmp/semgrep.sarif
           else
             echo "Semgrep SARIF not found, check logs above"
-            echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"semgrep","informationUri":"https://semgrep.dev"}},"results":[]}]}' > /tmp/semgrep.sarif  # Создаём пустой файл
+            echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"semgrep","informationUri":"https://semgrep.dev"}},"results":[]}]}' > /tmp/semgrep.sarif
+            chmod 644 /tmp/semgrep.sarif
           fi
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -69,9 +73,19 @@ jobs:
       - name: Restore SARIF files for upload
         run: |
           ls -la /tmp
-          cp /tmp/gitleaks-results.sarif ./gitleaks-results.sarif
-          cp /tmp/semgrep.sarif ./semgrep.sarif
+          # Копируем файлы обратно с принудительной перезаписью
+          cp -f /tmp/gitleaks-results.sarif ./gitleaks-results.sarif
+          cp -f /tmp/semgrep.sarif ./semgrep.sarif
           ls -la .
+          # Проверяем наличие файлов
+          if [ ! -f ./gitleaks-results.sarif ]; then
+            echo "Error: gitleaks-results.sarif not found after copy"
+            exit 1
+          fi
+          if [ ! -f ./semgrep.sarif ]; then
+            echo "Error: semgrep.sarif not found after copy"
+            exit 1
+          fi
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
