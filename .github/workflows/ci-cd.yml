@@ -15,7 +15,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # --- Gitleaks
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
@@ -34,7 +33,6 @@ jobs:
             echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}'> ./gitleaks-results.sarif
             cp ./gitleaks-results.sarif /tmp/gitleaks-results.sarif
           fi
-      # --- Semgrep (CLI, генерируем SARIF локально)
       - name: Set up Python (for Semgrep CLI)
         uses: actions/setup-python@v5
         with:
@@ -46,7 +44,6 @@ jobs:
           semgrep scan --config auto --sarif-output=semgrep.sarif || true
           [ -f semgrep.sarif ] || echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"semgrep","informationUri":"https://semgrep.dev"}},"results":[]}]}'> semgrep.sarif
           cp semgrep.sarif /tmp/semgrep.sarif
-      # --- npm audit (если нет package.json — создаём пустой отчёт)
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -63,7 +60,6 @@ jobs:
           cp /tmp/gitleaks-results.sarif ./gitleaks-results.sarif || true
           cp /tmp/semgrep.sarif ./semgrep.sarif || true
           ls -la .
-      # --- Upload to GitHub Security (каждый файл отдельно)
       - name: Upload Gitleaks SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
@@ -74,7 +70,6 @@ jobs:
         with:
           sarif_file: ./semgrep.sarif
         if: always()
-      # --- Сохранение отчётов как артефакты
       - name: Upload SAST reports
         uses: actions/upload-artifact@v4
         with:
@@ -176,7 +171,7 @@ jobs:
               name: github
               repo: user/example-blog
               branch: master
-              base_url: http://localhost
+              base_url: http://${{ secrets.STAGING_VM_HOST }}:8080
               commit_messages:
                 create: "Create {{collection}} “{{slug}}”"
                 update: "Update {{collection}} “{{slug}}”"
@@ -231,8 +226,19 @@ jobs:
                     name: body
                     widget: markdown
             EOF
+            # Ensure port 8080 is open on the VM
+            sudo ufw allow 8080 || echo "ufw not installed, skipping"
             docker compose -f ~/decap-staging/docker-compose.yml pull
             docker compose -f ~/decap-staging/docker-compose.yml up -d
+            # Wait for the container to be healthy
+            for i in {1..30}; do
+              if docker ps --filter "name=decap-staging-cms-1" --filter "status=running" | grep -q decap-staging-cms-1; then
+                echo "Container is running"
+                break
+              fi
+              echo "Waiting for container to start... ($i/30)"
+              sleep 2
+            done
             docker ps
       - name: Health check
         run: |
@@ -397,7 +403,7 @@ jobs:
               name: github
               repo: user/example-blog
               branch: master
-              base_url: http://localhost
+              base_url: http://${{ secrets.VM_HOST }}
               commit_messages:
                 create: "Create {{collection}} “{{slug}}”"
                 update: "Update {{collection}} “{{slug}}”"
@@ -452,8 +458,19 @@ jobs:
                     name: body
                     widget: markdown
             EOF
+            # Ensure port 80 is open on the VM
+            sudo ufw allow 80 || echo "ufw not installed, skipping"
             docker compose -f ~/decap-prod/docker-compose.yml pull
             docker compose -f ~/decap-prod/docker-compose.yml up -d
+            # Wait for the container to be healthy
+            for i in {1..30}; do
+              if docker ps --filter "name=decap-prod-cms-1" --filter "status=running" | grep -q decap-prod-cms-1; then
+                echo "Container is running"
+                break
+              fi
+              echo "Waiting for container to start... ($i/30)"
+              sleep 2
+            done
             docker ps
       - name: Health check
         run: |
