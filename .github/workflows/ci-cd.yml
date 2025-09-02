@@ -239,10 +239,14 @@ jobs:
               echo "Waiting for container to start... ($i/30)"
               sleep 2
             done
+            # Check local connectivity
+            curl -I localhost:8080 || echo "Local curl to port 8080 failed"
+            # Output container logs for debugging
+            docker logs decap-staging-cms-1
             docker ps
       - name: Health check
         run: |
-          curl -I --max-time 30 "http://${{ secrets.STAGING_VM_HOST }}:8080/" || exit 1
+          curl -I --max-time 30 "http://${{ secrets.STAGING_VM_HOST }}:8080/admin/" || exit 1
   # ---------------------- DAST (ZAP)
   dast:
     runs-on: ubuntu-latest
@@ -471,7 +475,11 @@ jobs:
               echo "Waiting for container to start... ($i/30)"
               sleep 2
             done
+            # Check local connectivity
+            curl -I localhost:80 || echo "Local curl to port 80 failed"
+            # Output container logs for debugging
+            docker logs decap-prod-cms-1
             docker ps
       - name: Health check
         run: |
-          curl -I --max-time 30 "http://${{ secrets.VM_HOST }}/" || exit 1
+          curl -I --max-time 30 "http://${{ secrets.VM_HOST }}/admin/" || exit 1
