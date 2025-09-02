@@ -1,5 +1,5 @@
 backend:
-  name: git-gateway
+  name: github
   repo: redsmilerus/content-repo
   branch: main
   base_url: http://${{ secrets.STAGING_VM_HOST }}
