@@ -158,8 +158,8 @@ jobs:
 
             IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
 
-            # container.env: только хосты в ORIGINS (без схем/портов)
-            cat > ~/decap-staging/container.env <<ENV
+            # container.env: только хосты в ORIGINS (без схем/портов, через запятую)
+            cat > ~/decap-staging/container.env <<'ENV'
             PORT=80
             HOST=0.0.0.0
             ORIGINS=${{ secrets.ORIGINS }}
@@ -167,14 +167,13 @@ jobs:
             # на случай CRLF из Git
             sed -i 's/\r$//' ~/decap-staging/container.env
 
-            # docker-compose.yml — публикуем 80 (UI) и 8080 (OAuth)
+            # docker-compose.yml — единый порт 80 для UI и OAuth (избежать конфликта)
             cat > ~/decap-staging/docker-compose.yml <<YML
             services:
               cms:
-                image: ${IMAGE}
+                image: \${IMAGE}
                 ports:
                   - "80:80"
-                  - "8080:8080"
                 restart: unless-stopped
                 env_file:
                   - ./container.env
@@ -183,13 +182,13 @@ jobs:
                   - ./container.env:/app/.env:ro
             YML
 
-            # config.yml — base_url указывает на OAuth-порт 8080
-            cat > ~/decap-staging/config.yml <<CFG
+            # config.yml — base_url на порт 80 (единый для UI/OAuth)
+            cat > ~/decap-staging/config.yml <<'CFG'
             backend:
               name: github
               repo: user/example-blog
               branch: master
-              base_url: http://${{ secrets.STAGING_VM_HOST }}:8080
+              base_url: http://${{ secrets.STAGING_VM_HOST }}
               commit_messages:
                 create: "Create {{collection}} “{{slug}}”"
                 update: "Update {{collection}} “{{slug}}”"
@@ -224,6 +223,9 @@ jobs:
                   - { label: "Body", name: body, widget: markdown }
             CFG
 
+            # Очистка перед обновлением
+            docker compose -f ~/decap-staging/docker-compose.yml down || true
+
             docker compose -f ~/decap-staging/docker-compose.yml pull
             docker compose -f ~/decap-staging/docker-compose.yml up -d
 
@@ -236,16 +238,16 @@ jobs:
               echo "Waiting for container to start... ($i/30)"; i=$((i+1)); sleep 2
             done
 
-            # Health: корень UI
-            curl -fsSL http://localhost/ >/dev/null || (echo "Local GET / failed" && exit 1)
-            # (необязательно) проверить доступность OAuth-порта
-            curl -fsSI http://localhost:8080/ >/dev/null || echo "OAuth port not answering HEAD (may be fine)"
+            # Health: /admin (основной UI путь Decap CMS)
+            curl -fsSL http://localhost/admin >/dev/null || (echo "Local GET /admin failed" && exit 1)
+            # OAuth check (на /callback или /, в зависимости от app.js)
+            curl -fsSI http://localhost/ >/dev/null || echo "OAuth port not answering HEAD (may be fine if no root handler)"
 
             docker ps
             docker logs --tail=200 decap-staging-cms-1 || true
 
       - name: Health check (public)
-        run: curl -fsSI --max-time 30 "http://${{ secrets.STAGING_VM_HOST }}/" >/dev/null
+        run: curl -fsSI --max-time 30 "http://${{ secrets.STAGING_VM_HOST }}/admin" >/dev/null
 
   # ---------- DAST ----------
   dast:
@@ -389,7 +391,7 @@ jobs:
 
             IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
 
-            cat > ~/decap-prod/container.env <<ENV
+            cat > ~/decap-prod/container.env <<'ENV'
             PORT=80
             HOST=0.0.0.0
             ORIGINS=${{ secrets.ORIGINS }}
@@ -399,10 +401,9 @@ jobs:
             cat > ~/decap-prod/docker-compose.yml <<YML
             services:
               cms:
-                image: ${IMAGE}
+                image: \${IMAGE}
                 ports:
                   - "80:80"
-                  - "8080:8080"
                 restart: unless-stopped
                 env_file:
                   - ./container.env
@@ -411,12 +412,12 @@ jobs:
                   - ./container.env:/app/.env:ro
             YML
 
-            cat > ~/decap-prod/config.yml <<CFG
+            cat > ~/decap-prod/config.yml <<'CFG'
             backend:
               name: github
               repo: user/example-blog
               branch: master
-              base_url: http://${{ secrets.VM_HOST }}:8080
+              base_url: http://${{ secrets.VM_HOST }}
               commit_messages:
                 create: "Create {{collection}} “{{slug}}”"
                 update: "Update {{collection}} “{{slug}}”"
@@ -451,6 +452,9 @@ jobs:
                   - { label: "Body", name: body, widget: markdown }
             CFG
 
+            # Очистка перед обновлением
+            docker compose -f ~/decap-prod/docker-compose.yml down || true
+
             docker compose -f ~/decap-prod/docker-compose.yml pull
             docker compose -f ~/decap-prod/docker-compose.yml up -d
 
@@ -462,11 +466,11 @@ jobs:
               echo "Waiting for container to start... ($i/30)"; i=$((i+1)); sleep 2
             done
 
-            curl -fsSI http://localhost/ >/dev/null || (echo "Local GET / failed" && exit 1)
-            curl -fsSI http://localhost:8080/ >/dev/null || echo "OAuth port not answering HEAD"
+            curl -fsSL http://localhost/admin >/dev/null || (echo "Local GET /admin failed" && exit 1)
+            curl -fsSI http://localhost/ >/dev/null || echo "OAuth port not answering HEAD"
 
             docker ps
             docker logs --tail=200 decap-prod-cms-1 || true
 
       - name: Health check (public)
-        run: curl -fsSI --max-time 30 "http://${{ secrets.VM_HOST }}/" >/dev/null
+        run: curl -fsSI --max-time 30 "http://${{ secrets.VM_HOST }}/admin" >/dev/null
