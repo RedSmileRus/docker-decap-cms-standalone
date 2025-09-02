@@ -170,17 +170,16 @@ jobs:
             # docker-compose.yml — публикуем 80 (UI) и 8080 (OAuth)
             cat > ~/decap-staging/docker-compose.yml <<YML
             services:
-              cms:
+            cms:
                 image: ${IMAGE}
                 ports:
-                  - "80:80"
-                  - "8080:8080"
+                - "80:80"
                 restart: unless-stopped
                 env_file:
-                  - ./container.env
+                - ./container.env
                 volumes:
-                  - ./config.yml:/app/config.yml:ro
-                  - ./container.env:/app/.env:ro
+                - ./config.yml:/app/config.yml:ro
+                - ./container.env:/app/.env:ro
             YML
 
             # config.yml — base_url указывает на OAuth-порт 8080
