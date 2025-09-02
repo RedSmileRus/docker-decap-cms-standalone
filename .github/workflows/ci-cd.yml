@@ -36,7 +36,7 @@ jobs:
             cp ./gitleaks-results.sarif /tmp/gitleaks-results.sarif
           else
             echo "No results.sarif found, creating empty SARIF"
-            echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}' > ./gitleaks-results.sarif
+            echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}'> ./gitleaks-results.sarif
             cp ./gitleaks-results.sarif /tmp/gitleaks-results.sarif
           fi
 
@@ -76,7 +76,7 @@ jobs:
           cp /tmp/semgrep.sarif ./semgrep.sarif || true
           ls -la .
 
-      # --- Upload to GitHub Security (каждый файл отдельно!)
+      # --- Upload to GitHub Security (каждый файл отдельно)
       - name: Upload Gitleaks SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
@@ -112,7 +112,7 @@ jobs:
       - name: Install YC CLI
         run: |
           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -a
-          install -m 0755 "$HOME/yandex-cloud/bin/yc" /usr/local/bin/yc
+          sudo install -m 0755 "$HOME/yandex-cloud/bin/yc" /usr/local/bin/yc
 
       - name: Configure YC
         env:
@@ -125,7 +125,7 @@ jobs:
           yc config set cloud-id "$YC_CLOUD_ID"
           yc config set folder-id "$YC_FOLDER_ID"
 
-      - name: Docker login
+      - name: Docker login (push)
         run: |
           TOKEN=$(yc iam create-token)
           echo "$TOKEN" | docker login -u iam --password-stdin cr.yandex
@@ -151,14 +151,37 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
+      - name: Install YC CLI (runner)
+        run: |
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -a
+          sudo install -m 0755 "$HOME/yandex-cloud/bin/yc" /usr/local/bin/yc
+
+      - name: Configure YC (runner)
+        env:
+          YC_SA_KEY_JSON: ${{ secrets.YC_SA_KEY_JSON }}
+          YC_CLOUD_ID: ${{ secrets.YC_CLOUD_ID }}
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: |
+          echo "$YC_SA_KEY_JSON" > sa-key.json
+          yc config set service-account-key sa-key.json
+          yc config set cloud-id "$YC_CLOUD_ID"
+          yc config set folder-id "$YC_FOLDER_ID"
+
+      - name: Create IAM token (runner)
+        run: echo "YC_IAM_TOKEN=$(yc iam create-token)" >> $GITHUB_ENV
+
       - name: Deploy to Staging VM
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.STAGING_VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          envs: YC_IAM_TOKEN
           script: |
             set -euo pipefail
+            # login to YCR on target VM
+            echo "$YC_IAM_TOKEN" | docker login -u iam --password-stdin cr.yandex
+
             mkdir -p ~/decap-staging
             export IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
             cat > ~/decap-staging/docker-compose.yml <<'YAML'
@@ -200,23 +223,18 @@ jobs:
             dast-report.html
         if: always()
 
-  # ---------------------- Image Scan (Trivy)
+  # ---------------------- Image Scan (Trivy via action)
   image-scan:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - name: Install Trivy
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget
-          wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.55.0_Linux-64bit.deb
-          sudo dpkg -i trivy_0.55.0_Linux-64bit.deb
-
-      - name: Trivy image scan
-        run: |
-          trivy image --format sarif --output trivy-image.sarif \
-            --severity HIGH,CRITICAL \
-            ${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}
+      - name: Trivy image scan (SARIF)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}
+          format: 'sarif'
+          output: 'trivy-image.sarif'
+          severity: 'HIGH,CRITICAL'
         continue-on-error: true
 
       - name: Upload Trivy SARIF
@@ -257,7 +275,7 @@ jobs:
           # Gitleaks: любые находки — fail
           if jq '.runs[0].results | length > 0' sast-reports/gitleaks-results.sarif | grep -q '^[1-9]'; then exit 1; fi
 
-          # Semgrep: только level=="error" валит сборку (можно усилить при желании)
+          # Semgrep: только level=="error" валит сборку
           if [ -f sast-reports/semgrep.sarif ]; then
             if jq '.runs[].results[]? | select(.level=="error")' sast-reports/semgrep.sarif | grep -q .; then exit 1; fi
           fi
@@ -292,14 +310,36 @@ jobs:
     needs: security-gateway
     if: needs.security-gateway.result == 'success'
     steps:
+      - name: Install YC CLI (runner)
+        run: |
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -a
+          sudo install -m 0755 "$HOME/yandex-cloud/bin/yc" /usr/local/bin/yc
+
+      - name: Configure YC (runner)
+        env:
+          YC_SA_KEY_JSON: ${{ secrets.YC_SA_KEY_JSON }}
+          YC_CLOUD_ID: ${{ secrets.YC_CLOUD_ID }}
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: |
+          echo "$YC_SA_KEY_JSON" > sa-key.json
+          yc config set service-account-key sa-key.json
+          yc config set cloud-id "$YC_CLOUD_ID"
+          yc config set folder-id "$YC_FOLDER_ID"
+
+      - name: Create IAM token (runner)
+        run: echo "YC_IAM_TOKEN=$(yc iam create-token)" >> $GITHUB_ENV
+
       - name: Deploy to Prod VM
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          envs: YC_IAM_TOKEN
           script: |
             set -euo pipefail
+            echo "$YC_IAM_TOKEN" | docker login -u iam --password-stdin cr.yandex
+
             mkdir -p ~/decap-prod
             export IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
             cat > ~/decap-prod/docker-compose.yml <<'YAML'
