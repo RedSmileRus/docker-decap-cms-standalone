@@ -20,16 +20,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
-        with:
-          config-path: .gitleaks.toml  # Опционально, если есть кастомная конфигурация
         env:
           GITLEAKS_COMMAND: "detect --redact --verbose --exit-code=2 --report-format=sarif --report-path=./gitleaks-results.sarif --log-level=debug"
         continue-on-error: true
       - name: Extract Gitleaks SARIF from zip
         run: |
+          echo "Checking for gitleaks-results.sarif.zip"
+          ls -la
           if [ -f gitleaks-results.sarif.zip ]; then
             unzip -o gitleaks-results.sarif.zip -d .
             if [ -f gitleaks-results.sarif ]; then
+              echo "SARIF file extracted successfully"
               mv gitleaks-results.sarif ./gitleaks-results.sarif
             else
               echo "No SARIF file in zip, creating empty SARIF"
@@ -40,10 +41,10 @@ jobs:
             echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}' > ./gitleaks-results.sarif
           fi
       - name: Run Semgrep
-        uses: semgrep/semgrep-action@v1  # Вернулись к v1
+        uses: semgrep/semgrep-action@v1
         with:
           config: auto
-          output: sarif  # Правильный параметр для v1
+          args: --sarif  # Добавляем флаг для генерации SARIF
         continue-on-error: true
       - name: Debug Semgrep output
         run: |
