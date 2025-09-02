@@ -1,31 +1,26 @@
 name: Secure DevSecOps Pipeline for Decap CMS (Yandex Cloud)
-
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
-
 permissions:
   contents: read
   security-events: write
   pull-requests: write
-
 jobs:
   # ---------------------- SAST (Gitleaks + Semgrep + npm audit)
   sast:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       # --- Gitleaks
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITLEAKS_COMMAND: "detect --redact --verbose --exit-code=2 --report-format=sarif --report-path=./results.sarif --log-level=debug"
         continue-on-error: true
-
       - name: Extract Gitleaks SARIF
         run: |
           echo "Checking for results.sarif"
@@ -39,56 +34,46 @@ jobs:
             echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}'> ./gitleaks-results.sarif
             cp ./gitleaks-results.sarif /tmp/gitleaks-results.sarif
           fi
-
       # --- Semgrep (CLI, генерируем SARIF локально)
       - name: Set up Python (for Semgrep CLI)
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install Semgrep CLI
         run: pip install --upgrade semgrep
-
       - name: Run Semgrep (SARIF)
         run: |
           semgrep scan --config auto --sarif-output=semgrep.sarif || true
           [ -f semgrep.sarif ] || echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"semgrep","informationUri":"https://semgrep.dev"}},"results":[]}]}'> semgrep.sarif
           cp semgrep.sarif /tmp/semgrep.sarif
-
       # --- npm audit (если нет package.json — создаём пустой отчёт)
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-
       - name: Install dependencies
         run: npm install || echo "No package.json or lock file, skipping install"
         continue-on-error: true
-
       - name: Run npm audit
         run: npm audit --audit-level=high --json > sast-npm-audit.json 2>/dev/null || echo '{"metadata":{"vulnerabilities":{"info":0,"low":0,"moderate":0,"high":0,"critical":0}},"vulnerabilities":[]}' > sast-npm-audit.json
         continue-on-error: true
-
       - name: Restore SARIF files for upload
         run: |
           ls -la /tmp
           cp /tmp/gitleaks-results.sarif ./gitleaks-results.sarif || true
           cp /tmp/semgrep.sarif ./semgrep.sarif || true
           ls -la .
-
       # --- Upload to GitHub Security (каждый файл отдельно)
       - name: Upload Gitleaks SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: ./gitleaks-results.sarif
         if: always()
-
       - name: Upload Semgrep SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: ./semgrep.sarif
         if: always()
-
       # --- Сохранение отчётов как артефакты
       - name: Upload SAST reports
         uses: actions/upload-artifact@v4
@@ -99,7 +84,6 @@ jobs:
             ./semgrep.sarif
             ./sast-npm-audit.json
         if: always()
-
   # ---------------------- Build & Push
   build:
     runs-on: ubuntu-latest
@@ -108,12 +92,10 @@ jobs:
       image_tag: ${{ steps.build.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
-
       - name: Install YC CLI
         run: |
           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -a
           sudo install -m 0755 "$HOME/yandex-cloud/bin/yc" /usr/local/bin/yc
-
       - name: Configure YC
         env:
           YC_SA_KEY_JSON: ${{ secrets.YC_SA_KEY_JSON }}
@@ -124,12 +106,10 @@ jobs:
           yc config set service-account-key sa-key.json
           yc config set cloud-id "$YC_CLOUD_ID"
           yc config set folder-id "$YC_FOLDER_ID"
-
       - name: Docker login (push)
         run: |
           TOKEN=$(yc iam create-token)
           echo "$TOKEN" | docker login -u iam --password-stdin cr.yandex
-
       - name: Build & Push
         id: build
         run: |
@@ -145,7 +125,6 @@ jobs:
           docker push "$IMAGE:$TAG"
           docker push "$IMAGE:latest"
           echo "image_tag=$TAG" >> $GITHUB_OUTPUT
-
   # ---------------------- Deploy to Staging
   deploy-staging:
     runs-on: ubuntu-latest
@@ -155,7 +134,6 @@ jobs:
         run: |
           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -a
           sudo install -m 0755 "$HOME/yandex-cloud/bin/yc" /usr/local/bin/yc
-
       - name: Configure YC (runner)
         env:
           YC_SA_KEY_JSON: ${{ secrets.YC_SA_KEY_JSON }}
@@ -166,10 +144,8 @@ jobs:
           yc config set service-account-key sa-key.json
           yc config set cloud-id "$YC_CLOUD_ID"
           yc config set folder-id "$YC_FOLDER_ID"
-
       - name: Create IAM token (runner)
         run: echo "YC_IAM_TOKEN=$(yc iam create-token)" >> $GITHUB_ENV
-
       - name: Deploy to Staging VM
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -181,10 +157,9 @@ jobs:
             set -euo pipefail
             # login to YCR on target VM
             echo "$YC_IAM_TOKEN" | docker login -u iam --password-stdin cr.yandex
-
             mkdir -p ~/decap-staging
             export IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
-            cat > ~/decap-staging/docker-compose.yml <<'YAML'
+            cat > ~/decap-staging/docker-compose.yml <<'EOF'
             services:
               cms:
                 image: ${IMAGE}
@@ -193,15 +168,55 @@ jobs:
                 restart: unless-stopped
                 volumes:
                   - ./config.yml:/app/config.yml:ro
-            YAML
+            EOF
+            cat > ~/decap-staging/config.yml <<'EOF'
+            backend:
+              name: github
+              repo: user/example-blog
+              branch: master
+              base_url: http://localhost
+              commit_messages:
+                create: "Create {{collection}} “{{slug}}”"
+                update: "Update {{collection}} “{{slug}}”"
+                delete: "Delete {{collection}} “{{slug}}”"
+                uploadMedia: "Upload “{{path}}”"
+                deleteMedia: "Delete “{{path}}”"
+            media_folder: /static/media/uploads
+            public_folder: /media/uploads
+            collections:
+              - label: "Posts"
+                label_singular: "Post"
+                name: posts
+                folder: posts
+                media_folder: "/static/media/blog"
+                public_folder: "../../../static/media/blog" # relative path from markdown file location
+                slug: "{{fields.slug}}"
+                path: "{{year}}/{{month}}/{{slug}}"
+                create: true
+                view_filters:
+                  - label: Drafts
+                    field: draft
+                    pattern: true
+                fields:
+                  - {label: "Template Key", name: templateKey, widget: "hidden", default: "blog-post"}
+                  - {label: "Slug", name: slug, widget: "string",
+                     pattern: ["^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                               "A slug can have no spaces or special characters"]
+                    }
+                  - {label: "Cover Image", name: cover, widget: "image"}
+                  - {label: "Title", name: title}
+                  - {label: "Publish Date", name: date, widget: "datetime"}
+                  - {label: "Description", name: description, widget: "text"}
+                  - {label: "Draft", name: draft, widget: "boolean", default: false}
+                  - {label: "Tags", name: tags, widget: "list" }
+                  - {label: "Body", name: body, widget: "markdown"}
+            EOF
             docker compose -f ~/decap-staging/docker-compose.yml pull
             docker compose -f ~/decap-staging/docker-compose.yml up -d
             docker ps
-
       - name: Health check
         run: |
           curl -I --max-time 30 "http://${{ secrets.STAGING_VM_HOST }}:8080/" || exit 1
-
   # ---------------------- DAST (ZAP)
   dast:
     runs-on: ubuntu-latest
@@ -213,7 +228,6 @@ jobs:
           target: http://${{ secrets.STAGING_VM_HOST }}:8080/
           cmd_options: '-a -m 10 -f json -o dast-report.json -r dast-report.html'
         continue-on-error: true
-
       - name: Upload DAST reports
         uses: actions/upload-artifact@v4
         with:
@@ -222,12 +236,29 @@ jobs:
             dast-report.json
             dast-report.html
         if: always()
-
   # ---------------------- Image Scan (Trivy via action)
   image-scan:
     runs-on: ubuntu-latest
     needs: build
     steps:
+      - name: Install YC CLI
+        run: |
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -a
+          sudo install -m 0755 "$HOME/yandex-cloud/bin/yc" /usr/local/bin/yc
+      - name: Configure YC
+        env:
+          YC_SA_KEY_JSON: ${{ secrets.YC_SA_KEY_JSON }}
+          YC_CLOUD_ID: ${{ secrets.YC_CLOUD_ID }}
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: |
+          echo "$YC_SA_KEY_JSON" > sa-key.json
+          yc config set service-account-key sa-key.json
+          yc config set cloud-id "$YC_CLOUD_ID"
+          yc config set folder-id "$YC_FOLDER_ID"
+      - name: Docker login
+        run: |
+          TOKEN=$(yc iam create-token)
+          echo "$TOKEN" | docker login -u iam --password-stdin cr.yandex
       - name: Trivy image scan (SARIF)
         uses: aquasecurity/trivy-action@0.24.0
         with:
@@ -236,20 +267,17 @@ jobs:
           output: 'trivy-image.sarif'
           severity: 'HIGH,CRITICAL'
         continue-on-error: true
-
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-image.sarif
         if: always()
-
       - name: Upload Trivy report
         uses: actions/upload-artifact@v4
         with:
           name: image-scan-reports
           path: trivy-image.sarif
         if: always()
-
   # ---------------------- Security Gateway
   security-gateway:
     runs-on: ubuntu-latest
@@ -257,10 +285,8 @@ jobs:
     steps:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
-
       - name: Download reports
         uses: actions/download-artifact@v4
-
       - name: Guard missing files
         run: |
           mkdir -p sast-reports dast-reports image-scan-reports
@@ -269,32 +295,26 @@ jobs:
           : > sast-reports/sast-npm-audit.json
           : > dast-reports/dast-report.json
           : > image-scan-reports/trivy-image.sarif
-
       - name: Check for critical vulnerabilities
         run: |
           # Gitleaks: любые находки — fail
           if jq '.runs[0].results | length > 0' sast-reports/gitleaks-results.sarif | grep -q '^[1-9]'; then exit 1; fi
-
           # Semgrep: только level=="error" валит сборку
           if [ -f sast-reports/semgrep.sarif ]; then
             if jq '.runs[].results[]? | select(.level=="error")' sast-reports/semgrep.sarif | grep -q .; then exit 1; fi
           fi
-
           # npm audit: high/critical
           if [ -s sast-reports/sast-npm-audit.json ]; then
             if jq -e '.metadata.vulnerabilities.high > 0 or .metadata.vulnerabilities.critical > 0' sast-reports/sast-npm-audit.json; then exit 1; fi
           fi
-
           # ZAP: риск > 2 (High/Critical)
           if [ -s dast-reports/dast-report.json ]; then
             if jq '.site[]?.alerts[]? | select((.riskcode|tonumber) > 2)' dast-reports/dast-report.json | grep -q .; then exit 1; fi
           fi
-
           # Trivy: level=="error"
           if [ -s image-scan-reports/trivy-image.sarif ]; then
             if jq '.runs[].results[]? | select(.level=="error")' image-scan-reports/trivy-image.sarif | grep -q .; then exit 1; fi
           fi
-
       - name: Comment on PR if failed
         if: failure() && github.event_name == 'pull_request'
         uses: thollander/actions-comment-pull-request@v3
@@ -303,7 +323,6 @@ jobs:
             Security checks failed! Found critical/high vulnerabilities or secrets.
             - Check reports in artifacts.
             - Recommendations: Update dependencies, fix code issues, remove secrets.
-
   # ---------------------- Deploy to Prod
   deploy-prod:
     runs-on: ubuntu-latest
@@ -314,7 +333,6 @@ jobs:
         run: |
           curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -a
           sudo install -m 0755 "$HOME/yandex-cloud/bin/yc" /usr/local/bin/yc
-
       - name: Configure YC (runner)
         env:
           YC_SA_KEY_JSON: ${{ secrets.YC_SA_KEY_JSON }}
@@ -325,10 +343,8 @@ jobs:
           yc config set service-account-key sa-key.json
           yc config set cloud-id "$YC_CLOUD_ID"
           yc config set folder-id "$YC_FOLDER_ID"
-
       - name: Create IAM token (runner)
         run: echo "YC_IAM_TOKEN=$(yc iam create-token)" >> $GITHUB_ENV
-
       - name: Deploy to Prod VM
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -339,10 +355,9 @@ jobs:
           script: |
             set -euo pipefail
             echo "$YC_IAM_TOKEN" | docker login -u iam --password-stdin cr.yandex
-
             mkdir -p ~/decap-prod
             export IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
-            cat > ~/decap-prod/docker-compose.yml <<'YAML'
+            cat > ~/decap-prod/docker-compose.yml <<'EOF'
             services:
               cms:
                 image: ${IMAGE}
@@ -351,11 +366,52 @@ jobs:
                 restart: unless-stopped
                 volumes:
                   - ./config.yml:/app/config.yml:ro
-            YAML
+            EOF
+            cat > ~/decap-prod/config.yml <<'EOF'
+            backend:
+              name: github
+              repo: user/example-blog
+              branch: master
+              base_url: http://localhost
+              commit_messages:
+                create: "Create {{collection}} “{{slug}}”"
+                update: "Update {{collection}} “{{slug}}”"
+                delete: "Delete {{collection}} “{{slug}}”"
+                uploadMedia: "Upload “{{path}}”"
+                deleteMedia: "Delete “{{path}}”"
+            media_folder: /static/media/uploads
+            public_folder: /media/uploads
+            collections:
+              - label: "Posts"
+                label_singular: "Post"
+                name: posts
+                folder: posts
+                media_folder: "/static/media/blog"
+                public_folder: "../../../static/media/blog" # relative path from markdown file location
+                slug: "{{fields.slug}}"
+                path: "{{year}}/{{month}}/{{slug}}"
+                create: true
+                view_filters:
+                  - label: Drafts
+                    field: draft
+                    pattern: true
+                fields:
+                  - {label: "Template Key", name: templateKey, widget: "hidden", default: "blog-post"}
+                  - {label: "Slug", name: slug, widget: "string",
+                     pattern: ["^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                               "A slug can have no spaces or special characters"]
+                    }
+                  - {label: "Cover Image", name: cover, widget: "image"}
+                  - {label: "Title", name: title}
+                  - {label: "Publish Date", name: date, widget: "datetime"}
+                  - {label: "Description", name: description, widget: "text"}
+                  - {label: "Draft", name: draft, widget: "boolean", default: false}
+                  - {label: "Tags", name: tags, widget: "list" }
+                  - {label: "Body", name: body, widget: "markdown"}
+            EOF
             docker compose -f ~/decap-prod/docker-compose.yml pull
             docker compose -f ~/decap-prod/docker-compose.yml up -d
             docker ps
-
       - name: Health check
         run: |
           curl -I --max-time 30 "http://${{ secrets.VM_HOST }}/" || exit 1
