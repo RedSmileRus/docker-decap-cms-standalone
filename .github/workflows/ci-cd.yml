@@ -21,12 +21,16 @@ jobs:
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v2
         with:
-          args: detect --no-git -v --report-format sarif --report-path gitleaks-results.sarif || true
-      - name: Ensure Gitleaks SARIF exists
+          redact: true
+          verbose: true
+          exit-code: 2
+          report-format: sarif
+          report-path: ./gitleaks-results.sarif
+          log-level: debug
+      - name: Extract Gitleaks SARIF from zip
         run: |
-          if [ ! -s gitleaks-results.sarif ]; then
-            echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","informationUri":"https://github.com/gitleaks/gitleaks"}},"results":[]}]}' > gitleaks-results.sarif
-          fi
+          unzip -o gitleaks-results.sarif.zip -d .
+          mv gitleaks-results.sarif ./gitleaks-results.sarif
       - name: Run Semgrep
         uses: semgrep/semgrep-action@v1
         with:
@@ -47,17 +51,17 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: |
-            gitleaks-results.sarif
-            semgrep.sarif
+            ./gitleaks-results.sarif
+            ./semgrep.sarif
         if: always()
       - name: Upload SAST reports
         uses: actions/upload-artifact@v4
         with:
           name: sast-reports
           path: |
-            gitleaks-results.sarif
-            semgrep.sarif
-            sast-npm-audit.json
+            ./gitleaks-results.sarif
+            ./semgrep.sarif
+            ./sast-npm-audit.json
         if: always()
 
   # Build & Push
@@ -92,6 +96,8 @@ jobs:
           IMAGE="${{ secrets.YC_REGISTRY_REPO }}"
           TAG="${{ github.sha }}"
           docker build \
+            --build-arg DECAP_CMS_VER=3.0.9 \
+            --build-arg NETLIFY_CMS_AUTH_HASH=${{ secrets.NETLIFY_CMS_AUTH_HASH }} \
             --build-arg OAUTH_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }} \
             --build-arg OAUTH_CLIENT_SECRET=${{ secrets.OAUTH_CLIENT_SECRET }} \
             --build-arg ORIGINS=${{ secrets.ORIGINS }} \
