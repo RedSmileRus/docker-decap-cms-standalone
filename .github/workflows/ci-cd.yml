@@ -158,13 +158,17 @@ jobs:
             export IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
             cat > ~/decap-staging/docker-compose.yml <<'EOF'
             services:
-              cms:
+            cms:
                 image: ${IMAGE}
                 ports:
-                  - "8080:80"
+                - "8080:8080"             # <— наружу 8080, внутри тоже 8080
                 restart: unless-stopped
+                environment:
+                - PORT=8080
+                - HOST=0.0.0.0
+                - ORIGINS=${{ secrets.ORIGINS }}   # список через запятую без пробелов
                 volumes:
-                  - ./config.yml:/app/config.yml:ro
+                - ./config.yml:/app/config.yml:ro
             EOF
             cat > ~/decap-staging/config.yml <<'EOF'
             backend:
