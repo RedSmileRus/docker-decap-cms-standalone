@@ -189,11 +189,18 @@ jobs:
             cat > ~/decap-staging/container.env <<'ENV'
             PORT=80
             HOST=0.0.0.0
-            ORIGINS=${{ secrets.ORIGINS }}
+            # ВСЕГДА с протоколом, можно перечислять через запятую
+            ORIGINS=http://158.160.111.15
+
             NODE_ENV=production
+
             # OAuth for GitHub (runtime!)
             OAUTH_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }}
             OAUTH_CLIENT_SECRET=${{ secrets.OAUTH_CLIENT_SECRET }}
+
+            # Некоторые провайдеры ожидают именно эти имена:
+            GITHUB_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }}
+            GITHUB_CLIENT_SECRET=${{ secrets.OAUTH_CLIENT_SECRET }}
             ENV
             sed -i 's/\r$//' ~/decap-staging/container.env
 
@@ -496,15 +503,22 @@ jobs:
             IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
             case "$IMAGE" in *:) echo "Image tag is empty — check needs.build.outputs.image_tag"; exit 1;; esac
 
-            # env для контейнера
+            # env для контейнера (prod)
             cat > ~/decap-prod/container.env <<'ENV'
             PORT=80
             HOST=0.0.0.0
-            ORIGINS=${{ secrets.ORIGINS }}
+            # PROD origin С ПРОТОКОЛОМ и ПОРТОМ:
+            ORIGINS=http://158.160.111.15:8080
+
             NODE_ENV=production
+
             # OAuth for GitHub (runtime!)
             OAUTH_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }}
             OAUTH_CLIENT_SECRET=${{ secrets.OAUTH_CLIENT_SECRET }}
+
+            # Дубли под ожидаемые имена:
+            GITHUB_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }}
+            GITHUB_CLIENT_SECRET=${{ secrets.OAUTH_CLIENT_SECRET }}
             ENV
             sed -i 's/\r$//' ~/decap-prod/container.env
 
