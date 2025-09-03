@@ -490,9 +490,8 @@ jobs:
             mkdir -p ~/decap-prod
 
             # Выбираем свободный внешний порт: 80 или fallback 8080
-            HOST_PORT=80
-            if ss -ltn | grep -qE '(^|[:.])80[[:space:]]'; then HOST_PORT=8080; fi
-            sudo ufw allow ${HOST_PORT} || true
+            HOST_PORT=8080
+            sudo ufw allow 8080 || true
 
             IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
             case "$IMAGE" in *:) echo "Image tag is empty — check needs.build.outputs.image_tag"; exit 1;; esac
