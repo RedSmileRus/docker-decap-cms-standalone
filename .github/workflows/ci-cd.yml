@@ -434,7 +434,7 @@ jobs:
       - name: Create IAM token (runner)
         run: echo "YC_IAM_TOKEN=$(yc iam create-token)" >> $GITHUB_ENV
 
-      - name: Deploy to Prod VM
+      - name: Deploy to Prod VM (auto-fallback to 8080 if 80 is busy)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VM_HOST }}
@@ -445,14 +445,16 @@ jobs:
             set -euo pipefail
             echo "$YC_IAM_TOKEN" | docker login -u iam --password-stdin cr.yandex
             mkdir -p ~/decap-prod
-            sudo ufw allow 80 || true
+
+            # Выбираем свободный внешний порт: 80 или fallback 8080
+            HOST_PORT=80
+            if ss -ltn | grep -qE '(^|[:.])80[[:space:]]'; then HOST_PORT=8080; fi
+            sudo ufw allow ${HOST_PORT} || true
 
             IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
-            # Базовая проверка, что тег не пустой
-            case "$IMAGE" in
-              *:) echo "Image tag is empty — check needs.build.outputs.image_tag"; exit 1;;
-            esac
+            case "$IMAGE" in *:) echo "Image tag is empty — check needs.build.outputs.image_tag"; exit 1;; esac
 
+            # env для контейнера
             cat > ~/decap-prod/container.env <<'ENV'
             PORT=80
             HOST=0.0.0.0
@@ -462,12 +464,13 @@ jobs:
             ENV
             sed -i 's/\r$//' ~/decap-prod/container.env
 
-            cat > ~/decap-prod/docker-compose.yml <<YML
+            # docker-compose с подстановкой HOST_PORT
+            cat > ~/decap-prod/docker-compose.yml <<'YML'
             services:
               cms:
-                image: ${IMAGE}
+                image: __IMAGE__
                 ports:
-                  - "80:80"
+                  - "${HOST_PORT}:80"
                 restart: unless-stopped
                 env_file:
                   - ./container.env
@@ -475,13 +478,21 @@ jobs:
                   - ./config.yml:/app/config.yml:ro
                   - ./container.env:/app/.env:ro
             YML
+            # Вставим реальное имя образа
+            sed -i "s|__IMAGE__|${IMAGE}|g" ~/decap-prod/docker-compose.yml
+            export HOST_PORT
 
+            # base_url c учётом порта
+            BASE_URL="http://${{ secrets.VM_HOST }}"
+            if [ "$HOST_PORT" != "80" ]; then BASE_URL="${BASE_URL}:${HOST_PORT}"; fi
+
+            # config.yml для Decap
             cat > ~/decap-prod/config.yml <<CFG
             backend:
               name: github
               repo: redsmilerus/content-repo
               branch: main
-              base_url: http://${{ secrets.VM_HOST }}
+              base_url: ${BASE_URL}
               auth_endpoint: auth
               commit_messages:
                 create: "Create {{collection}} “{{slug}}”"
@@ -520,21 +531,26 @@ jobs:
             docker compose -f ~/decap-prod/docker-compose.yml pull
             docker compose -f ~/decap-prod/docker-compose.yml up -d
 
-            # ready
-            t0=$(date +%s); while :; do
-              logs="$(docker logs $(docker compose -f ~/decap-prod/docker-compose.yml ps -q cms) 2>&1 | tail -n 200 || true)"
+            # Ожидание готовности
+            t0=$(date +%s)
+            while :; do
+              cid=$(docker compose -f ~/decap-prod/docker-compose.yml ps -q cms || true)
+              logs="$(docker logs "$cid" 2>&1 | tail -n 200 || true)"
               echo "$logs" | grep -q "Decap CMS listening on port" && break || true
               [ $(( $(date +%s) - t0 )) -gt 60 ] && { echo "Timeout"; echo "$logs"; exit 1; }
               sleep 2
             done
 
-            curl -fsSI http://localhost/ >/dev/null || curl -fsSL http://localhost/#/ >/dev/null
+            # Локальный health
+            curl -fsSL "http://localhost:${HOST_PORT}/healthz" >/dev/null || \
+            curl -fsSL "http://localhost:${HOST_PORT}/#/" >/dev/null
 
             docker ps
-            docker logs --tail=200 $(docker compose -f ~/decap-prod/docker-compose.yml ps -q cms) || true
+            docker logs --tail=200 "$(docker compose -f ~/decap-prod/docker-compose.yml ps -q cms)" || true
 
       - name: Health check (public)
         run: |
           set -e
-          curl -fsSI --max-time 30 "http://${{ secrets.VM_HOST }}/" >/dev/null || \
-          curl -fsSL --max-time 30 "http://${{ secrets.VM_HOST }}/#/" >/dev/null
+          curl -fsSL --max-time 30 "http://${{ secrets.VM_HOST }}/healthz" >/dev/null || \
+          curl -fsSL --max-time 30 "http://${{ secrets.VM_HOST }}:8080/healthz" >/dev/null
+
