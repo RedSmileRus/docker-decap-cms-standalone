@@ -20,24 +20,16 @@ jobs:
       - uses: actions/checkout@v4
 
       # --- Gitleaks (SARIF) ---
-      - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        with:
-          args: --redact --verbose --exit-code=2 --report-format sarif --report-path gitleaks-results.sarif
-        continue-on-error: true
-
-      # Некоторые версии экшена пишут results.sarif или gitleaks.sarif — нормализуем
-      - name: Collect Gitleaks SARIF (for Code Scanning)
-        if: always()
+      - name: Run Gitleaks (via Docker)
         run: |
-          if [ -f gitleaks-results.sarif ]; then
-            echo "gitleaks-results.sarif is present"
-          elif [ -f results.sarif ]; then
-            mv results.sarif gitleaks-results.sarif
-          elif [ -f gitleaks.sarif ]; then
-            mv gitleaks.sarif gitleaks-results.sarif
-          fi
-          [ -f gitleaks-results.sarif ] || echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks"}},"results":[]}]}'> gitleaks-results.sarif
+          docker run --rm \
+            -v "$PWD:/work" ghcr.io/gitleaks/gitleaks:latest detect \
+            --source="/work" \
+            --redact --verbose --exit-code=2 \
+            --report-format sarif \
+            --report-path "/work/gitleaks-results.sarif" \
+          || true
+        continue-on-error: true
 
       # --- Semgrep (SARIF) ---
       - name: Set up Python for Semgrep
@@ -191,12 +183,15 @@ jobs:
             # container.env
             cat > ~/decap-staging/container.env <<'ENV'
             PORT=80
-            OAUTH_PORT=8080
             HOST=0.0.0.0
             ORIGINS=${{ secrets.ORIGINS }}
             NODE_ENV=production
+            # OAuth for GitHub (runtime!)
+            OAUTH_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }}
+            OAUTH_CLIENT_SECRET=${{ secrets.OAUTH_CLIENT_SECRET }}
             ENV
             sed -i 's/\r$//' ~/decap-staging/container.env
+
 
             # docker-compose.yml — публикуем только 80
             cat > ~/decap-staging/docker-compose.yml <<YML
@@ -460,9 +455,12 @@ jobs:
             HOST=0.0.0.0
             ORIGINS=${{ secrets.ORIGINS }}
             NODE_ENV=production
-            OAUTH_PORT=8080
+            # OAuth for GitHub (runtime!)
+            OAUTH_CLIENT_ID=${{ secrets.OAUTH_CLIENT_ID }}
+            OAUTH_CLIENT_SECRET=${{ secrets.OAUTH_CLIENT_SECRET }}
             ENV
             sed -i 's/\r$//' ~/decap-prod/container.env
+
 
             # docker-compose с подстановкой HOST_PORT
             cat > ~/decap-prod/docker-compose.yml <<'YML'
