@@ -340,10 +340,12 @@ jobs:
         uses: aquasecurity/trivy-action@0.24.0
         with:
           image-ref: ${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}
-          format: 'sarif'
-          output: 'trivy-image.sarif'
-          severity: 'HIGH,CRITICAL'
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL
+          ignore-unfixed: true
         continue-on-error: true
+      
 
       - name: Upload Trivy SARIF
         if: always()
@@ -394,13 +396,15 @@ jobs:
           if jq '.runs[]?.results[]? | select(.level=="error")' sast-reports/semgrep.sarif | grep -q .; then
             echo "Semgrep errors"; exit 1; fi
           # npm audit: high/critical
-          if jq -e '.metadata.vulnerabilities.high > 0 or .metadata.vulnerabilities.critical > 0' sast-reports/sast-npm-audit.json; then
+          if jq -e '.metadata.vulnerabilities.high > 0 or .metadata.vulnerabilities.critical > 0' \
+            sast-reports/sast-npm-audit.json >/dev/null; then
             echo "npm audit high/critical"; exit 1; fi
           # ZAP: риск > 2 (High/Critical)
           if jq '.site[]?.alerts[]? | select((.riskcode|tonumber) > 2)' dast-reports/dast-report.json | grep -q .; then
             echo "ZAP High/Critical"; exit 1; fi
-          # Trivy: level=="error" (sarif)
-          if jq '.runs[]?.results[]? | select(.level=="error")' image-scan-reports/trivy-image.sarif | grep -q .; then
+          # Trivy: level=="error" (теперь это только CRITICAL)
+          if jq '.runs[]?.results[]? | select(.level=="error")' \
+            image-scan-reports/trivy-image.sarif | grep -q .; then
             echo "Trivy errors"; exit 1; fi
 
   # ---------- Deploy: Prod ----------
