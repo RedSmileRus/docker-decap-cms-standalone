@@ -420,7 +420,6 @@ jobs:
           cp -f _artifacts/sast-reports/* sast-reports/ 2>/dev/null || true
           cp -f _artifacts/dast-reports/* dast-reports/ 2>/dev/null || true
           cp -f _artifacts/image-scan-reports/* image-scan-reports/ 2>/dev/null || true
-          # заполняем пустые, если исходных не было
           [ -s sast-reports/gitleaks-results.sarif ] || echo '{"runs":[{"results":[]}]}'> sast-reports/gitleaks-results.sarif
           [ -s sast-reports/semgrep.sarif ] || echo '{"runs":[{"results":[]}]}'> sast-reports/semgrep.sarif
           [ -s sast-reports/sast-npm-audit.json ] || echo '{"metadata":{"vulnerabilities":{"info":0,"low":0,"moderate":0,"high":0,"critical":0}},"vulnerabilities":[]}' > sast-reports/sast-npm-audit.json
