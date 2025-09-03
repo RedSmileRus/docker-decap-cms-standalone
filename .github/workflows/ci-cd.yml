@@ -346,6 +346,7 @@ jobs:
           ignore-unfixed: true
           scanners: vuln
           vuln-type: library
+          limit-severities-for-sarif: true   # <-- добавлено
         continue-on-error: true
 
       - name: Show CRITICAL (debug)
@@ -403,22 +404,24 @@ jobs:
       - name: Check for critical vulnerabilities
         run: |
           set -e
-          # Gitleaks: любые находки — fail
+          # Gitleaks
           if jq '.runs[0].results | length' sast-reports/gitleaks-results.sarif | grep -q '^[1-9]'; then
             echo "Gitleaks findings"; exit 1; fi
-          # Semgrep: level=="error"
+          # Semgrep
           if jq '.runs[]?.results[]? | select(.level=="error")' sast-reports/semgrep.sarif | grep -q .; then
             echo "Semgrep errors"; exit 1; fi
-          # npm audit: high/critical
+          # npm audit
           if jq -e '.metadata.vulnerabilities.high > 0 or .metadata.vulnerabilities.critical > 0' \
             sast-reports/sast-npm-audit.json >/dev/null; then
             echo "npm audit high/critical"; exit 1; fi
-          # ZAP: риск > 2 (High/Critical)
+          # ZAP
           if jq '.site[]?.alerts[]? | select((.riskcode|tonumber) > 2)' dast-reports/dast-report.json | grep -q .; then
             echo "ZAP High/Critical"; exit 1; fi
 
-          # Trivy: собрать CRITICAL из SARIF, применить allowlist
-          jq -r '.runs[]?.results[]? | select(.level=="error") | .ruleId' \
+          # Trivy: взять ТОЛЬКО CRITICAL из SARIF и применить allowlist
+          jq -r '.runs[]?.results[]?
+                  | select(.message?.text | test("Severity:\\s*CRITICAL"))
+                  | .ruleId' \
             image-scan-reports/trivy-image.sarif | sort -u > _trivy_cves.txt || true
 
           if [ -s _trivy_cves.txt ]; then
@@ -435,6 +438,7 @@ jobs:
               exit 1
             fi
           fi
+  
 
       - name: Print Trivy CRITICAL on failure
         if: failure()
