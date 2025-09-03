@@ -280,36 +280,34 @@ jobs:
 
   # ---------- DAST ----------
   dast:
-      runs-on: ubuntu-latest
-      needs: deploy-staging
-      steps:
-        - name: ZAP Full Scan
-          uses: zaproxy/action-full-scan@v0.12.0
-          with:
-            target: http://${{ secrets.STAGING_VM_HOST }}/
-            # ВАЖНО: без -f/-o. Этих опций нет у zap-full-scan.py.
-            # Экшен сам создаёт report_json.json и report_html.html.
-            cmd_options: '-a -m 10'
-          continue-on-error: true
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    steps:
+      - name: ZAP Full Scan
+        uses: zaproxy/action-full-scan@v0.12.0
+        with:
+          target: http://${{ secrets.STAGING_VM_HOST }}/
+          cmd_options: '-a -m 10'
+          allow_issue_writing: false     # <— добавили
+        continue-on-error: true
+
+      - name: Collect & normalize ZAP outputs
+        if: always()
+        run: |
+          [ -f report_json.json ] && mv -f report_json.json dast-report.json || true
+          [ -f report_html.html ] && mv -f report_html.html dast-report.html || true
+          [ -f dast-report.json ] || printf '{"site":[]}\n' > dast-report.json
+          [ -f dast-report.html ] || printf '<html><body>No report generated</body></html>\n' > dast-report.html
+
+      - name: Upload DAST reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-reports
+          path: |
+            dast-report.json
+            dast-report.html
   
-        - name: Collect & normalize ZAP outputs
-          if: always()
-          run: |
-            # Переименуем дефолтные имена от экшена в те, что ждёт пайплайн
-            [ -f report_json.json ] && mv -f report_json.json dast-report.json || true
-            [ -f report_html.html ] && mv -f report_html.html dast-report.html || true
-            # Подстелим соломки, чтобы upload-артефактов не падал
-            [ -f dast-report.json ] || printf '{"site":[]}\n' > dast-report.json
-            [ -f dast-report.html ] || printf '<html><body>No report generated</body></html>\n' > dast-report.html
-  
-        - name: Upload DAST reports
-          if: always()
-          uses: actions/upload-artifact@v4
-          with:
-            name: dast-reports
-            path: |
-              dast-report.json
-              dast-report.html
 
   # ---------- Image Scan ----------
   image-scan:
