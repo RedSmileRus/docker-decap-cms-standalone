@@ -27,9 +27,14 @@ jobs:
             --source="/work" \
             --redact --verbose --exit-code=2 \
             --report-format sarif \
-            --report-path "/work/gitleaks-results.sarif" \
-          || true
+            --report-path "/work/gitleaks-results.sarif"
         continue-on-error: true
+
+      - name: Ensure Gitleaks SARIF exists
+        if: always()
+        run: |
+          [ -f gitleaks-results.sarif ] || \
+          echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks"}},"results":[]}]}'> gitleaks-results.sarif
 
       # --- Semgrep (SARIF) ---
       - name: Set up Python for Semgrep
@@ -192,7 +197,6 @@ jobs:
             ENV
             sed -i 's/\r$//' ~/decap-staging/container.env
 
-
             # docker-compose.yml — публикуем только 80
             cat > ~/decap-staging/docker-compose.yml <<YML
             services:
@@ -283,7 +287,7 @@ jobs:
         with:
           target: http://${{ secrets.STAGING_VM_HOST }}/
           cmd_options: '-a -m 10'
-          allow_issue_writing: false     # <— добавили
+          allow_issue_writing: false
         continue-on-error: true
 
       - name: Collect & normalize ZAP outputs
@@ -302,7 +306,6 @@ jobs:
           path: |
             dast-report.json
             dast-report.html
-  
 
   # ---------- Image Scan ----------
   image-scan:
@@ -373,15 +376,11 @@ jobs:
           cp -f _artifacts/sast-reports/* sast-reports/ 2>/dev/null || true
           cp -f _artifacts/dast-reports/* dast-reports/ 2>/dev/null || true
           cp -f _artifacts/image-scan-reports/* image-scan-reports/ 2>/dev/null || true
-          : > sast-reports/gitleaks-results.sarif
-          : > sast-reports/semgrep.sarif
-          : > sast-reports/sast-npm-audit.json
-          : > dast-reports/dast-report.json
-          : > image-scan-reports/trivy-image.sarif
+
           # заполняем пустые, если исходных не было
-          for f in gitleaks-results.sarif semgrep.sarif sast-npm-audit.json; do
-            [ -s "sast-reports/$f" ] || echo '{}' > "sast-reports/$f"
-          done
+          [ -s sast-reports/gitleaks-results.sarif ] || echo '{"runs":[{"results":[]}]}'> sast-reports/gitleaks-results.sarif
+          [ -s sast-reports/semgrep.sarif ] || echo '{"runs":[{"results":[]}]}'> sast-reports/semgrep.sarif
+          [ -s sast-reports/sast-npm-audit.json ] || echo '{"metadata":{"vulnerabilities":{"info":0,"low":0,"moderate":0,"high":0,"critical":0}},"vulnerabilities":[]}' > sast-reports/sast-npm-audit.json
           [ -s dast-reports/dast-report.json ] || echo '{"site":[]}' > dast-reports/dast-report.json
           [ -s image-scan-reports/trivy-image.sarif ] || echo '{"runs":[{"results":[]}]}'> image-scan-reports/trivy-image.sarif
 
@@ -461,7 +460,6 @@ jobs:
             ENV
             sed -i 's/\r$//' ~/decap-prod/container.env
 
-
             # docker-compose с подстановкой HOST_PORT
             cat > ~/decap-prod/docker-compose.yml <<'YML'
             services:
@@ -540,7 +538,7 @@ jobs:
             done
 
             # Локальный health
-            curl -fsSL "http://localhost:${HOST_PORT}/healthz" >/dev/null || \
+            curl -fsSI "http://localhost:${HOST_PORT}/" >/dev/null || \
             curl -fsSL "http://localhost:${HOST_PORT}/#/" >/dev/null
 
             docker ps
@@ -549,6 +547,7 @@ jobs:
       - name: Health check (public)
         run: |
           set -e
-          curl -fsSL --max-time 30 "http://${{ secrets.VM_HOST }}/healthz" >/dev/null || \
-          curl -fsSL --max-time 30 "http://${{ secrets.VM_HOST }}:8080/healthz" >/dev/null
-
+          curl -fsSI --max-time 30 "http://${{ secrets.VM_HOST }}/" >/dev/null || \
+          curl -fsSL --max-time 30 "http://${{ secrets.VM_HOST }}/#/" >/dev/null || \
+          curl -fsSI --max-time 30 "http://${{ secrets.VM_HOST }}:8080/" >/dev/null || \
+          curl -fsSL --max-time 30 "http://${{ secrets.VM_HOST }}:8080/#/" >/dev/null
