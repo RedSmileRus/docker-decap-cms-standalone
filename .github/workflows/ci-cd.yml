@@ -1,4 +1,4 @@
-name: Secure DevSecOps Pipeline for Decap CMS (Yandex Cloud)
+name: DevSecOps Pipeline for Decap CMS (Yandex Cloud)
 on:
   push:
     branches: ["main"]
@@ -349,7 +349,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [sast, dast, image-scan]
     env:
-      TRIVY_ALLOWLIST: ${{ vars.TRIVY_ALLOWLIST }}  # "CVE-2024-1111 CVE-2023-2222"
+      TRIVY_ALLOWLIST: ${{ vars.TRIVY_ALLOWLIST }}
     steps:
       # Устанавливаем jq для обработки JSON-отчётов
       - name: Install jq
