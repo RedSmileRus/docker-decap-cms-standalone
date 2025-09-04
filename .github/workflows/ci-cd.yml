@@ -344,82 +344,78 @@ jobs:
           name: image-scan-reports
           path: trivy-image.sarif
 
-  # ---------- Security Gateway ----------
+# ---------- Security Gateway ----------
   security-gateway:
     runs-on: ubuntu-latest
     needs: [sast, dast, image-scan]
     env:
       TRIVY_ALLOWLIST: ${{ vars.TRIVY_ALLOWLIST }}  # "CVE-2024-1111 CVE-2023-2222"
     steps:
+      # Устанавливаем jq для обработки JSON-отчётов
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
-
+      # Скачиваем артефакты от SAST, DAST и Image Scan
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: ./_artifacts
-
+      # Копируем артефакты в рабочие директории
       - name: Normalize paths
         run: |
+          set -euo pipefail
           mkdir -p sast-reports dast-reports image-scan-reports
-          cp -f _artifacts/sast-reports/* sast-reports/ 2>/dev/null || true
-          cp -f _artifacts/dast-reports/* dast-reports/ 2>/dev/null || true
-          cp -f _artifacts/image-scan-reports/* image-scan-reports/ 2>/dev/null || true
-          [ -s sast-reports/gitleaks-results.sarif ] || echo '{"runs":[{"results":[]}]}'> sast-reports/gitleaks-results.sarif
-          [ -s sast-reports/semgrep.sarif ] || echo '{"runs":[{"results":[]}]}'> sast-reports/semgrep.sarif
-          [ -s sast-reports/sast-npm-audit.json ] || echo '{"metadata":{"vulnerabilities":{"info":0,"low":0,"moderate":0,"high":0,"critical":0}},"vulnerabilities":[]}' > sast-reports/sast-npm-audit.json
-          [ -s dast-reports/dast-report.json ] || echo '{"site":[]}' > dast-reports/dast-report.json
-          [ -s image-scan-reports/trivy-image.sarif ] || echo '{"runs":[{"results":[]}]}'> image-scan-reports/trivy-image.sarif
-
+          cp -f _artifacts/sast-reports/* sast-reports/
+          cp -f _artifacts/dast-reports/* dast-reports/
+          cp -f _artifacts/image-scan-reports/* image-scan-reports/
+      # Проверяем наличие критических уязвимостей
       - name: Check for critical vulnerabilities
         run: |
-          set -e
-          # Gitleaks
+          set -euo pipefail
+          # Gitleaks: проверяем наличие любых находок
           if jq '.runs[0].results | length' sast-reports/gitleaks-results.sarif | grep -q '^[1-9]'; then
-            echo "Gitleaks findings"; exit 1; fi
-          # Semgrep
+            echo "Gitleaks findings"
+            exit 1
+          fi
+          # Semgrep: проверяем наличие ошибок уровня error
           if jq '.runs[]?.results[]? | select(.level=="error")' sast-reports/semgrep.sarif | grep -q .; then
-            echo "Semgrep errors"; exit 1; fi
-          # npm audit
+            echo "Semgrep errors"
+            exit 1
+          fi
+          # npm audit: проверяем наличие high/critical уязвимостей
           if jq -e '.metadata.vulnerabilities.high > 0 or .metadata.vulnerabilities.critical > 0' \
             sast-reports/sast-npm-audit.json >/dev/null; then
-            echo "npm audit high/critical"; exit 1; fi
-          # ZAP
+            echo "npm audit high/critical"
+            exit 1
+          fi
+          # ZAP: проверяем наличие high/critical уязвимостей (riskcode > 2)
           if jq '.site[]?.alerts[]? | select((.riskcode|tonumber) > 2)' dast-reports/dast-report.json | grep -q .; then
-            echo "ZAP High/Critical"; exit 1; fi
-
-          # Trivy: взять ТОЛЬКО CRITICAL из SARIF и применить allowlist
-          jq -r '.runs[]?.results[]?
-                  | select(.message?.text | test("Severity:\\s*CRITICAL"))
-                  | .ruleId' \
-            image-scan-reports/trivy-image.sarif | sort -u > _trivy_cves.txt || true
-
+            echo "ZAP High/Critical"
+            exit 1
+          fi
+          # Trivy: проверяем CRITICAL уязвимости с учётом allowlist
+          jq -r '.runs[]?.results[]? | select(.message?.text | test("Severity:\\s*CRITICAL")) | .ruleId' \
+            image-scan-reports/trivy-image.sarif | sort -u > _trivy_cves.txt
           if [ -s _trivy_cves.txt ]; then
             if [ -n "${TRIVY_ALLOWLIST:-}" ]; then
               printf "%s\n" $TRIVY_ALLOWLIST | tr ' ' '\n' | sort -u > _allow.txt
-              comm -23 _trivy_cves.txt _allow.txt > _violations.txt || true
+              comm -23 _trivy_cves.txt _allow.txt > _violations.txt
             else
               cp _trivy_cves.txt _violations.txt
             fi
-
             if [ -s _violations.txt ]; then
               echo "Trivy CRITICAL (not allowlisted):"
               cat _violations.txt
               exit 1
             fi
           fi
-
+      # Выводим критические уязвимости Trivy при ошибке
       - name: Print Trivy CRITICAL on failure
         if: failure()
         run: |
+          set -euo pipefail
           echo "CRITICAL issues from Trivy (first 50):"
-          if [ -s image-scan-reports/trivy-image.sarif ]; then
-            jq -r '.runs[]?.results[]? | select(.level=="error") |
-                   [.ruleId, (.message?.text // ""), (.locations[0]?.physicalLocation?.artifactLocation?.uri // "")] | @tsv' \
-              image-scan-reports/trivy-image.sarif | head -n 50 || true
-          else
-            echo "image-scan-reports/trivy-image.sarif is missing or empty"
-          fi
+          jq -r '.runs[]?.results[]? | select(.level=="error") | [.ruleId, (.message?.text // ""), (.locations[0]?.physicalLocation?.artifactLocation?.uri // "")] | @tsv' \
+            image-scan-reports/trivy-image.sarif | head -n 50
 
   # ---------- Deploy: Prod ----------
   deploy-prod:
