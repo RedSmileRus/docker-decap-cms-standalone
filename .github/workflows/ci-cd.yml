@@ -159,9 +159,13 @@ jobs:
             echo "Checking port 80 and running containers..."
             ss -ltn > ~/decap-staging/port-diagnostic.log
             docker ps -a > ~/decap-staging/docker-ps.log
+            # Останавливаем и удаляем все контейнеры и сети
+            docker stop $(docker ps -q) 2>/dev/null
+            docker rm $(docker ps -aq) 2>/dev/null
+            docker network prune -f
             # Проверяем, свободен ли порт 80
             if ss -ltn '( sport = :80 )' | grep -q LISTEN; then
-              echo "ERROR: Port 80 is already in use"
+              echo "ERROR: Port 80 is still in use after cleanup"
               cat ~/decap-staging/port-diagnostic.log
               cat ~/decap-staging/docker-ps.log
               exit 1
@@ -169,10 +173,6 @@ jobs:
             IMAGE="${{ secrets.YC_REGISTRY_REPO }}:${{ needs.build.outputs.image_tag }}"
             # Останавливаем и удаляем предыдущий деплой
             docker compose -f ~/decap-staging/docker-compose.yml down
-            # Удаляем все остановленные контейнеры и сети
-            docker stop $(docker ps -q) 2>/dev/null
-            docker rm $(docker ps -aq) 2>/dev/null
-            docker network prune -f
             # Фиксируем порт 80
             HOST_PORT=80
             export HOST_PORT
@@ -260,7 +260,16 @@ jobs:
             # Проверяем локальную доступность CMS
             curl -fsSI "http://localhost:80/" >/dev/null
             docker ps
-            docker logs --tail=200 "$(docker compose -f ~/decap-staging/docker-compose.yml ps -q cms)"
+      # Копируем диагностические логи с VM на runner
+      - name: Copy diagnostic logs from VM
+        if: always()
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.STAGING_VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
+          source: "~/decap-staging/port-diagnostic.log,~/decap-staging/docker-ps.log,~/decap-staging/cms.log"
+          target: "~/decap-staging-logs"
       # Проверяем публичную доступность CMS на порту 80
       - name: Health check (public)
         run: |
@@ -273,9 +282,9 @@ jobs:
         with:
           name: deploy-logs
           path: |
-            ~/decap-staging/port-diagnostic.log
-            ~/decap-staging/docker-ps.log
-            ~/decap-staging/cms.log
+            ~/decap-staging-logs/port-diagnostic.log
+            ~/decap-staging-logs/docker-ps.log
+            ~/decap-staging-logs/cms.log
 
   # ---------- DAST ----------
   dast:
