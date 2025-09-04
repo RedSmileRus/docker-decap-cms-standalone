@@ -28,13 +28,6 @@ jobs:
             --redact --verbose --exit-code=2 \
             --report-format sarif \
             --report-path "/work/gitleaks-results.sarif"
-        continue-on-error: true
-
-      - name: Ensure Gitleaks SARIF exists
-        if: always()
-        run: |
-          [ -f gitleaks-results.sarif ] || \
-          echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks"}},"results":[]}]}'> gitleaks-results.sarif
 
       # --- Semgrep (SARIF) ---
       - name: Set up Python for Semgrep
