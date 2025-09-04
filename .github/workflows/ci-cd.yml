@@ -41,17 +41,20 @@ jobs:
       # Установка зависимостей, только если есть package.json
       - name: Install dependencies (if package.json exists)
         run: |
-          if [ -f package.json ]; then
+          if [ -f app/decap-cms/package.json ]; then
+            cd app/decap-cms
             npm ci
+            cd ../..
           else
             echo "skip npm install (no package.json)"
           fi
-      # npm audit, только если есть package.json
       - name: npm audit (json)
         run: |
-          if [ -f package.json ]; then
-            npm audit --audit-level=high --json > sast-npm-audit.json
-          fi
+          if [ -f app/decap-cms/package.json ]; then
+            cd app/decap-cms
+            npm audit --audit-level=high --json > ../../sast-npm-audit.json
+            cd ../..
+          fi          
       # Загрузка артефактов, только если они существуют
       - name: Upload SAST artifacts
         uses: actions/upload-artifact@v4
