@@ -270,19 +270,7 @@ jobs:
           target: http://${{ secrets.STAGING_VM_HOST }}/
           cmd_options: '-a -m 10'
           allow_issue_writing: false
-      # Переименовываем отчёты ZAP для единообразия
-      - name: Collect & normalize ZAP outputs
-        run: |
-          mv -f report_json.json dast-report.json
-          mv -f report_html.html dast-report.html
-      # Загружаем отчёты DAST как артефакты
-      - name: Upload DAST reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: dast-reports
-          path: |
-            dast-report.json
-            dast-report.html
+          artifact_name: dast-reports  # Переименовываем артефакт ZAP на dast-reports
 
   # ---------- Image Scan ----------
   image-scan:
@@ -388,7 +376,7 @@ jobs:
             exit 1
           fi
           # ZAP: проверяем наличие high/critical уязвимостей (riskcode > 2)
-          if jq '.site[]?.alerts[]? | select((.riskcode|tonumber) > 2)' dast-reports/dast-report.json | grep -q .; then
+          if jq '.site[]?.alerts[]? | select((.riskcode|tonumber) > 2)' dast-reports/report_json.json | grep -q .; then
             echo "ZAP High/Critical"
             exit 1
           fi
