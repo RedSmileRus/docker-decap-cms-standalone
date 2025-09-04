@@ -1,4 +1,4 @@
-name: DevSecOps Pipeline for Decap CMS (Yandex Cloud)
+name: DevSecOps Pipeline for Decap CMS (Yandex Cloud) v.15.1
 on:
   push:
     branches: ["main"]
